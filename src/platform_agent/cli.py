@@ -1,9 +1,11 @@
-from __future__ import annotations
-
 import typer
 
-app = typer.Typer(add_completion=False)
+app = typer.Typer(add_completion=False, no_args_is_help=True)
+
+@app.callback()
+def _root() -> None:
+    return
 
 @app.command()
-def smoke() -> None:
+def health() -> None:
     typer.echo("ok")
