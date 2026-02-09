@@ -5,21 +5,40 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
       - name: Set up Python
         run: uv python install 3.12
+
       - name: Sync
-        run: uv sync --extra dev --locked
+        env:
+          GIT_TOKEN: ${{ secrets.FOUNDRY_CI_READ_TOKEN }}
+        run: |
+          test -n "${GIT_TOKEN}" || { echo "::error::FOUNDRY_CI_READ_TOKEN is not set"; exit 1; }
+          git config --global url."https://x-access-token:${GIT_TOKEN}@github.com/".insteadOf "https://github.com/"
+          uv sync --extra dev --locked
+
       - name: Compile
         run: uv run python -m compileall -q src tests
+
       - name: Ruff
         run: uv run ruff check .
+
       - name: Mypy
         run: uv run mypy src
+
       - name: Pytest
         run: uv run pytest -q
