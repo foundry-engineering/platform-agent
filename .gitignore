@@ -6,3 +6,5 @@ __pycache__/
 .ruff_cache/
 dist/
 build/
+*.egg-info/
+pyproject.toml.bak.*
