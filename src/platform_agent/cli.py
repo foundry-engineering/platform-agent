@@ -1,10 +1,9 @@
 import typer
 
-app = typer.Typer(add_completion=False, no_args_is_help=True)
+from .demo import demo as demo_app
 
-@app.callback()
-def _root() -> None:
-    return
+app = typer.Typer(add_completion=False, no_args_is_help=True)
+app.add_typer(demo_app, name="demo")
 
 @app.command()
 def health() -> None:
