@@ -27,7 +27,8 @@ jobs:
           GIT_TOKEN: ${{ secrets.FOUNDRY_CI_READ_TOKEN }}
         run: |
           test -n "${GIT_TOKEN}" || { echo "::error::FOUNDRY_CI_READ_TOKEN is not set"; exit 1; }
-          git config --global url."https://x-access-token:${GIT_TOKEN}@github.com/".insteadOf "https://github.com/"
+          git config --global --unset-all http.https://github.com/.extraheader || true
+git config --global url."https://x-access-token:${GIT_TOKEN}@github.com/".insteadOf "https://github.com/"
           uv sync --extra dev --locked
 
       - name: Compile
