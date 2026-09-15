@@ -4,16 +4,21 @@ import hashlib
 import importlib
 import json
 import re
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import PurePosixPath
-from typing import Any, Mapping, Sequence, cast
+from typing import Any, cast
 
 from platform_agent.capability_router import CapabilityRegistry
 from platform_agent.control_plane import DispatchPlan, TaskAssignment, build_dispatch_plan
 from platform_agent.plan_admission import PlanAdmission
 
 _EXECUTION_POLICY_ID = "https://foundry.engineering/schemas/policy/v1/execution_policy.json"
+_SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
 _SHA256_REF_RE = re.compile(r"^sha256:[a-f0-9]{64}$")
+
+PolicyValidator = Callable[[object], None]
+PolicyHasher = Callable[[object], str]
 
 
 class SandboxAdmissionError(ValueError):
@@ -58,10 +63,7 @@ class ConstraintGrant:
     evidence_ref: str
 
     def as_dict(self) -> dict[str, str]:
-        return {
-            "constraint": self.constraint,
-            "evidence_ref": self.evidence_ref,
-        }
+        return {"constraint": self.constraint, "evidence_ref": self.evidence_ref}
 
 
 @dataclass(frozen=True, slots=True)
@@ -210,10 +212,13 @@ def _normalize_path(value: str, *, field: str) -> PurePosixPath:
 
 
 def _path_covered(path: PurePosixPath, roots: tuple[PurePosixPath, ...]) -> bool:
-    return any(root == PurePosixPath(".") or path == root or path.is_relative_to(root) for root in roots)
+    return any(
+        root == PurePosixPath(".") or path == root or path.is_relative_to(root)
+        for root in roots
+    )
 
 
-def _normalized_unique_paths(values: tuple[str, ...], *, field: str) -> tuple[PurePosixPath, ...]:
+def _unique_paths(values: tuple[str, ...], *, field: str) -> tuple[PurePosixPath, ...]:
     if len(values) != len(set(values)):
         raise SandboxAdmissionError(f"{field} contains duplicate paths")
     return tuple(_normalize_path(value, field=field) for value in values)
@@ -224,8 +229,8 @@ def _validate_request_shape(request: ExecutionRequest) -> None:
         raise SandboxAdmissionError("execution request task_id must not be empty")
     if request.max_file_bytes <= 0:
         raise SandboxAdmissionError("execution request max_file_bytes must be positive")
-    _normalized_unique_paths(request.read_paths, field=f"{request.task_id}.read_paths")
-    _normalized_unique_paths(request.write_paths, field=f"{request.task_id}.write_paths")
+    _unique_paths(request.read_paths, field=f"{request.task_id}.read_paths")
+    _unique_paths(request.write_paths, field=f"{request.task_id}.write_paths")
 
     for values, field in (
         (request.tool_ids, "tool_ids"),
@@ -233,7 +238,9 @@ def _validate_request_shape(request: ExecutionRequest) -> None:
         (request.environment_keys, "environment_keys"),
     ):
         if len(values) != len(set(values)) or any(not value for value in values):
-            raise SandboxAdmissionError(f"{request.task_id}.{field} must be unique non-empty strings")
+            raise SandboxAdmissionError(
+                f"{request.task_id}.{field} must be unique non-empty strings"
+            )
 
     if len(request.network_ports) != len(set(request.network_ports)):
         raise SandboxAdmissionError(f"{request.task_id}.network_ports contains duplicates")
@@ -270,15 +277,15 @@ def _validate_request_shape(request: ExecutionRequest) -> None:
         if any(_SHA256_REF_RE.fullmatch(ref) is None for ref in approval.evidence_refs):
             raise SandboxAdmissionError(f"{request.task_id} approval evidence ref is invalid")
 
-    constraints = [item.constraint for item in request.constraints]
-    if len(constraints) != len(set(constraints)):
+    constraint_names = [item.constraint for item in request.constraints]
+    if len(constraint_names) != len(set(constraint_names)):
         raise SandboxAdmissionError(f"{request.task_id} contains duplicate constraint grants")
     for constraint in request.constraints:
         if not constraint.constraint or _SHA256_REF_RE.fullmatch(constraint.evidence_ref) is None:
             raise SandboxAdmissionError(f"{request.task_id} constraint grant is invalid")
 
 
-def _policy_runtime() -> tuple[object, object]:
+def _policy_runtime() -> tuple[PolicyValidator, PolicyHasher]:
     try:
         module = importlib.import_module("agent_protocol.execution_policy")
     except ModuleNotFoundError as exc:
@@ -293,10 +300,12 @@ def _policy_runtime() -> tuple[object, object]:
         raise SandboxAdmissionError(
             "installed agent-protocol does not provide the required Execution Policy v1 contract"
         )
-    return validator, hasher
+    return cast(PolicyValidator, validator), cast(PolicyHasher, hasher)
 
 
-def _policy_ref(plan: Mapping[str, Any], task: Mapping[str, Any], task_id: str) -> Mapping[str, Any]:
+def _policy_ref(
+    plan: Mapping[str, Any], task: Mapping[str, Any], task_id: str
+) -> Mapping[str, Any]:
     raw = task.get("policy_ref", plan.get("policy_ref"))
     return _require_mapping(raw, field=f"{task_id}.policy_ref")
 
@@ -320,19 +329,22 @@ def _policy_for_assignment(
     task: Mapping[str, Any],
     assignment: TaskAssignment,
     policies: Mapping[str, object],
+    validator: PolicyValidator,
+    hasher: PolicyHasher,
 ) -> tuple[str, str, Mapping[str, Any], tuple[str, ...]]:
     ref = _policy_ref(plan, task, assignment.task_id)
     policy_id = _require_string(ref.get("policy_id"), field=f"{assignment.task_id}.policy_id")
     policy_sha256 = _require_string(
         ref.get("policy_sha256"), field=f"{assignment.task_id}.policy_sha256"
     )
+    if _SHA256_RE.fullmatch(policy_sha256) is None:
+        raise SandboxAdmissionError(f"task {assignment.task_id} policy_sha256 is invalid")
     if policy_id not in policies:
         raise SandboxAdmissionError(
             f"task {assignment.task_id} execution policy is unavailable: {policy_id}"
         )
     policy = _require_mapping(policies[policy_id], field=f"policy[{policy_id}]")
 
-    validator, hasher = _policy_runtime()
     try:
         validator(policy)
         actual_hash = hasher(policy)
@@ -340,7 +352,7 @@ def _policy_for_assignment(
         raise SandboxAdmissionError(
             f"task {assignment.task_id} execution policy validation failed"
         ) from exc
-    if not isinstance(actual_hash, str) or actual_hash != policy_sha256:
+    if actual_hash != policy_sha256:
         raise SandboxAdmissionError(
             f"task {assignment.task_id} execution policy hash does not match policy_ref"
         )
@@ -351,27 +363,31 @@ def _policy_for_assignment(
 
     raw_constraints = ref.get("constraints")
     if raw_constraints is None:
-        constraints: tuple[str, ...] = ()
-    else:
-        values = _require_sequence(raw_constraints, field=f"{assignment.task_id}.constraints")
-        constraints_list: list[str] = []
-        for value in values:
-            constraints_list.append(
-                _require_string(value, field=f"{assignment.task_id}.constraints[]")
-            )
-        if len(constraints_list) != len(set(constraints_list)):
-            raise SandboxAdmissionError(f"task {assignment.task_id} contains duplicate constraints")
-        constraints = tuple(sorted(constraints_list))
+        return policy_id, policy_sha256, policy, ()
+    values = _require_sequence(raw_constraints, field=f"{assignment.task_id}.constraints")
+    constraints = tuple(
+        sorted(
+            _require_string(value, field=f"{assignment.task_id}.constraints[]")
+            for value in values
+        )
+    )
+    if len(constraints) != len(set(constraints)):
+        raise SandboxAdmissionError(f"task {assignment.task_id} contains duplicate constraints")
     return policy_id, policy_sha256, policy, constraints
 
 
 def _target_scope(
-    task: Mapping[str, Any],
-    request: ExecutionRequest,
+    task: Mapping[str, Any], request: ExecutionRequest
 ) -> tuple[PurePosixPath, ...]:
+    filesystem_activity = bool(
+        request.repo is not None
+        or request.read_paths
+        or request.write_paths
+        or request.allow_delete
+    )
     raw_target = task.get("target")
     if raw_target is None:
-        if request.repo is not None or request.read_paths or request.write_paths or request.allow_delete:
+        if filesystem_activity:
             raise SandboxAdmissionError(
                 f"task {request.task_id} has no canonical target; filesystem execution is denied"
             )
@@ -384,41 +400,47 @@ def _target_scope(
 
     raw_scope = target.get("path_scope")
     if raw_scope is None:
-        if request.read_paths or request.write_paths or request.allow_delete:
+        if filesystem_activity:
             raise SandboxAdmissionError(
                 f"task {request.task_id} target has no path_scope; filesystem execution is denied"
             )
         return ()
 
     values = _require_sequence(raw_scope, field=f"{request.task_id}.target.path_scope")
-    roots: list[PurePosixPath] = []
-    for value in values:
-        roots.append(
-            _normalize_path(
-                _require_string(value, field=f"{request.task_id}.target.path_scope[]"),
-                field=f"{request.task_id}.target.path_scope",
-            )
+    roots = tuple(
+        _normalize_path(
+            _require_string(value, field=f"{request.task_id}.target.path_scope[]"),
+            field=f"{request.task_id}.target.path_scope",
         )
+        for value in values
+    )
     if len(roots) != len(set(roots)):
         raise SandboxAdmissionError(f"task {request.task_id} target path_scope contains duplicates")
-    return tuple(roots)
+    if not roots and filesystem_activity:
+        raise SandboxAdmissionError(
+            f"task {request.task_id} target path_scope is empty; filesystem execution is denied"
+        )
+    return roots
 
 
-def _policy_roots(policy: Mapping[str, Any], *, key: str, task_id: str) -> tuple[PurePosixPath, ...]:
+def _policy_roots(
+    policy: Mapping[str, Any], *, key: str, task_id: str
+) -> tuple[PurePosixPath, ...]:
     sandbox = _require_mapping(policy.get("sandbox"), field=f"{task_id}.policy.sandbox")
     filesystem = _require_mapping(
         sandbox.get("filesystem"), field=f"{task_id}.policy.sandbox.filesystem"
     )
     values = _require_sequence(filesystem.get(key), field=f"{task_id}.policy.{key}")
-    roots: list[PurePosixPath] = []
-    for value in values:
-        roots.append(
-            _normalize_path(
-                _require_string(value, field=f"{task_id}.policy.{key}[]"),
-                field=f"{task_id}.policy.{key}",
-            )
+    roots = tuple(
+        _normalize_path(
+            _require_string(value, field=f"{task_id}.policy.{key}[]"),
+            field=f"{task_id}.policy.{key}",
         )
-    return tuple(roots)
+        for value in values
+    )
+    if len(roots) != len(set(roots)):
+        raise SandboxAdmissionError(f"task {task_id} policy {key} contains duplicates")
+    return roots
 
 
 def _admit_request(
@@ -429,6 +451,8 @@ def _admit_request(
     plan: Mapping[str, Any],
     request: ExecutionRequest,
     policies: Mapping[str, object],
+    validator: PolicyValidator,
+    hasher: PolicyHasher,
 ) -> SandboxGrant:
     _validate_request_shape(request)
     if request.task_id != assignment.task_id:
@@ -439,26 +463,24 @@ def _admit_request(
         task=task,
         assignment=assignment,
         policies=policies,
+        validator=validator,
+        hasher=hasher,
     )
     target_roots = _target_scope(task, request)
-    requested_reads = _normalized_unique_paths(
-        request.read_paths, field=f"{request.task_id}.read_paths"
-    )
-    requested_writes = _normalized_unique_paths(
-        request.write_paths, field=f"{request.task_id}.write_paths"
-    )
+    requested_reads = _unique_paths(request.read_paths, field=f"{request.task_id}.read_paths")
+    requested_writes = _unique_paths(request.write_paths, field=f"{request.task_id}.write_paths")
     policy_read_roots = _policy_roots(policy, key="read_roots", task_id=request.task_id)
     policy_write_roots = _policy_roots(policy, key="write_roots", task_id=request.task_id)
 
     for path in requested_reads:
         if not _path_covered(path, policy_read_roots):
             raise SandboxAdmissionError(f"task {request.task_id} read path exceeds policy scope")
-        if target_roots and not _path_covered(path, target_roots):
+        if not _path_covered(path, target_roots):
             raise SandboxAdmissionError(f"task {request.task_id} read path exceeds task target scope")
     for path in requested_writes:
         if not _path_covered(path, policy_write_roots):
             raise SandboxAdmissionError(f"task {request.task_id} write path exceeds policy scope")
-        if target_roots and not _path_covered(path, target_roots):
+        if not _path_covered(path, target_roots):
             raise SandboxAdmissionError(f"task {request.task_id} write path exceeds task target scope")
 
     sandbox = _require_mapping(policy.get("sandbox"), field=f"{request.task_id}.policy.sandbox")
@@ -498,19 +520,16 @@ def _admit_request(
         network.get("allowed_ports"), field=f"{request.task_id}.policy.allowed_ports"
     )
     allowed_ports = {
-        int(item)
-        for item in raw_ports
-        if isinstance(item, int) and not isinstance(item, bool)
+        item for item in raw_ports if isinstance(item, int) and not isinstance(item, bool)
     }
     if len(allowed_ports) != len(raw_ports):
         raise SandboxAdmissionError("policy allowed_ports contains invalid value")
     if mode == "deny" and (request.network_hosts or request.network_ports):
         raise SandboxAdmissionError(f"task {request.task_id} network access is denied by policy")
-    if mode == "allowlist":
-        denied_hosts = sorted(set(request.network_hosts) - allowed_hosts)
-        denied_ports = sorted(set(request.network_ports) - allowed_ports)
-        if denied_hosts or denied_ports:
-            raise SandboxAdmissionError(f"task {request.task_id} network request exceeds allowlist")
+    if mode == "allowlist" and (
+        set(request.network_hosts) - allowed_hosts or set(request.network_ports) - allowed_ports
+    ):
+        raise SandboxAdmissionError(f"task {request.task_id} network request exceeds allowlist")
 
     environment = _require_mapping(
         sandbox.get("environment"), field=f"{request.task_id}.policy.environment"
@@ -527,7 +546,8 @@ def _admit_request(
             environment.get("denied_keys"), field=f"{request.task_id}.policy.denied_keys"
         )
     }
-    if set(request.environment_keys) & denied_keys or set(request.environment_keys) - allowed_keys:
+    requested_env = set(request.environment_keys)
+    if requested_env & denied_keys or requested_env - allowed_keys:
         raise SandboxAdmissionError(f"task {request.task_id} environment request is denied by policy")
 
     resources = _require_mapping(
@@ -596,10 +616,9 @@ def _admit_request(
         "approval_evidence_refs": sorted(approval_evidence),
         "constraint_evidence_refs": sorted(constraint_evidence),
     }
-    grant_id = "sgr_" + _sha256(material)[:32]
     return SandboxGrant(
         schema_version="foundry.sandbox-grant.v1",
-        grant_id=grant_id,
+        grant_id="sgr_" + _sha256(material)[:32],
         dispatch_id=dispatch.dispatch_id,
         task_id=assignment.task_id,
         agent_id=assignment.agent_id,
@@ -642,6 +661,7 @@ def admit_dispatch_to_sandbox(
         satisfied_preconditions=satisfied_preconditions,
     )
     plan_map, tasks = _task_map(plan)
+    validator, hasher = _policy_runtime()
 
     by_task: dict[str, ExecutionRequest] = {}
     for request in requests:
@@ -662,42 +682,61 @@ def admit_dispatch_to_sandbox(
             "execution requests must exactly match ready assignments: " + "; ".join(details)
         )
 
-    grants: list[SandboxGrant] = []
-    for assignment in dispatch.assignments:
-        try:
-            task = tasks[assignment.task_id]
-        except KeyError as exc:
-            raise SandboxAdmissionError(
-                f"dispatch task missing from admitted plan: {assignment.task_id}"
-            ) from exc
-        grants.append(
-            _admit_request(
-                dispatch=dispatch,
-                assignment=assignment,
-                task=task,
-                plan=plan_map,
-                request=by_task[assignment.task_id],
-                policies=policies,
-            )
+    grants = tuple(
+        _admit_request(
+            dispatch=dispatch,
+            assignment=assignment,
+            task=tasks[assignment.task_id],
+            plan=plan_map,
+            request=by_task[assignment.task_id],
+            policies=policies,
+            validator=validator,
+            hasher=hasher,
         )
-
-    grants_tuple = tuple(grants)
+        for assignment in dispatch.assignments
+    )
     material = {
         "schema_version": "foundry.sandbox-admission.v1",
         "dispatch_id": dispatch.dispatch_id,
         "plan_admission_id": admission.admission_id,
         "candidate_sha256": admission.candidate_sha256,
         "registry_sha256": registry.registry_sha256,
-        "grant_ids": [grant.grant_id for grant in grants_tuple],
+        "grant_ids": [grant.grant_id for grant in grants],
     }
-    sandbox_admission_id = "sad_" + _sha256(material)[:32]
     return SandboxAdmission(
         schema_version="foundry.sandbox-admission.v1",
-        sandbox_admission_id=sandbox_admission_id,
+        sandbox_admission_id="sad_" + _sha256(material)[:32],
         dispatch_id=dispatch.dispatch_id,
         plan_admission_id=admission.admission_id,
         candidate_sha256=admission.candidate_sha256,
         registry_sha256=registry.registry_sha256,
-        grants=grants_tuple,
+        grants=grants,
         dispatch=dispatch,
     )
+
+
+def verify_sandbox_admission(
+    current: SandboxAdmission,
+    plan: object,
+    *,
+    admission: PlanAdmission,
+    registry: CapabilityRegistry,
+    requests: Sequence[ExecutionRequest],
+    policies: Mapping[str, object],
+    completed: frozenset[str] = frozenset(),
+    failed: frozenset[str] = frozenset(),
+    satisfied_preconditions: frozenset[str] = frozenset(),
+) -> None:
+    """Recompute the full authority decision and reject stale or tampered grants."""
+    expected = admit_dispatch_to_sandbox(
+        plan,
+        admission=admission,
+        registry=registry,
+        requests=requests,
+        policies=policies,
+        completed=completed,
+        failed=failed,
+        satisfied_preconditions=satisfied_preconditions,
+    )
+    if current.as_dict() != expected.as_dict():
+        raise SandboxAdmissionError("sandbox admission does not match recomputed authority")
