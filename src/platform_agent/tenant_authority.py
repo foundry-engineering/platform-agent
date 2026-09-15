@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import importlib
 import json
@@ -35,6 +36,7 @@ WorkspaceIdDeriver = Callable[[object], str]
 WorkspacePayloadHasher = Callable[[object], str]
 WorkspaceSigningMessage = Callable[[object], bytes]
 WorkspaceValidator = Callable[[object], None]
+WorkspaceSignatureVerifier = Callable[[object, Mapping[str, bytes]], tuple[str, ...]]
 
 
 class TenantAuthorityError(SandboxAdmissionError):
@@ -49,8 +51,17 @@ class TenantSignerSet:
 
 @dataclass(frozen=True, slots=True)
 class WorkspaceBindingSigner:
+    """External workspace-lease signer with independently verifiable public key."""
+
     kid: str
+    public_key: bytes
     sign: Callable[[bytes], bytes]
+
+    def __post_init__(self) -> None:
+        if not self.kid:
+            raise ValueError("workspace signer key id must not be empty")
+        if not isinstance(self.public_key, bytes) or len(self.public_key) != 32:
+            raise ValueError("workspace signer public key must be 32 raw Ed25519 bytes")
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +116,7 @@ def _workspace_protocol_runtime() -> tuple[
     WorkspacePayloadHasher,
     WorkspaceSigningMessage,
     WorkspaceValidator,
+    WorkspaceSignatureVerifier,
 ]:
     try:
         module = importlib.import_module("agent_protocol.workspace_binding")
@@ -114,13 +126,15 @@ def _workspace_protocol_runtime() -> tuple[
     hasher = getattr(module, "workspace_binding_signed_payload_sha256", None)
     signing_message = getattr(module, "workspace_binding_signing_message", None)
     validator = getattr(module, "validate_workspace_binding", None)
-    if not all(callable(item) for item in (deriver, hasher, signing_message, validator)):
+    verifier = getattr(module, "verify_workspace_binding_signatures", None)
+    if not all(callable(item) for item in (deriver, hasher, signing_message, validator, verifier)):
         raise TenantAuthorityError("installed agent-protocol lacks Workspace Binding support")
     return (
         cast(WorkspaceIdDeriver, deriver),
         cast(WorkspacePayloadHasher, hasher),
         cast(WorkspaceSigningMessage, signing_message),
         cast(WorkspaceValidator, validator),
+        cast(WorkspaceSignatureVerifier, verifier),
     )
 
 
@@ -228,9 +242,6 @@ def admit_tenant_dispatch(
     evaluator_map = builtin_constraint_evaluators()
     evaluator_map.update(constraint_evaluators or {})
 
-    # The lower-level admission performs all scope/policy/approval/constraint checks.
-    # Its pre-tenant grant identity is intentionally discarded; tenant context is
-    # added before canonical identity derivation and signing below.
     def pretenant_id(value: object) -> str:
         return "sgr_" + _sha256(value)[:32]
 
@@ -279,8 +290,6 @@ def admit_tenant_dispatch(
             sign_execution_grant(document, signers=signer_set.signers)
             for document in unsigned
         )
-        # Re-read every repository after quota reservation. Any concurrent
-        # suspension/revocation/key rotation makes this issuance stale and fails.
         current_snapshots = _snapshots_for_dispatch(
             tenant_store,
             tenant_id=tenant_id,
@@ -351,7 +360,7 @@ def issue_workspace_binding(
     if len(base_commit_sha) != 40 or any(ch not in "0123456789abcdef" for ch in base_commit_sha):
         raise TenantAuthorityError("workspace base commit must be lowercase 40-hex SHA")
 
-    derive_id, payload_hasher, signing_message, validator = _workspace_protocol_runtime()
+    derive_id, payload_hasher, signing_message, validator, verifier = _workspace_protocol_runtime()
     document: dict[str, object] = {
         "schema_version": "workspace-binding.v1",
         "binding_id": "wsb_" + "0" * 32,
@@ -366,10 +375,12 @@ def issue_workspace_binding(
     payload_sha = payload_hasher(document)
     message = signing_message(document)
     kids = [item.kid for item in signers]
-    if any(not kid for kid in kids) or len(kids) != len(set(kids)):
-        raise TenantAuthorityError("workspace signer key ids must be non-empty and unique")
+    if len(kids) != len(set(kids)):
+        raise TenantAuthorityError("workspace signer key ids must be unique")
+
+    ordered_signers = tuple(sorted(signers, key=lambda item: item.kid))
     signatures: list[dict[str, str]] = []
-    for signer in sorted(signers, key=lambda item: item.kid):
+    for signer in ordered_signers:
         try:
             signature = signer.sign(message)
         except Exception as exc:
@@ -378,8 +389,6 @@ def issue_workspace_binding(
             raise TenantAuthorityError(
                 f"workspace signer must return 64-byte Ed25519 signature: {signer.kid}"
             )
-        import base64
-
         signatures.append(
             {
                 "kid": signer.kid,
@@ -393,4 +402,13 @@ def issue_workspace_binding(
         validator(document)
     except Exception as exc:
         raise TenantAuthorityError("signed Workspace Binding failed canonical validation") from exc
+
+    trusted_keys = {signer.kid: signer.public_key for signer in ordered_signers}
+    try:
+        verified = verifier(document, trusted_keys)
+    except Exception as exc:
+        raise TenantAuthorityError("workspace signer output failed cryptographic verification") from exc
+    expected = tuple(signer.kid for signer in ordered_signers)
+    if tuple(verified) != expected:
+        raise TenantAuthorityError("workspace signature verification set does not match signers")
     return document
