@@ -4,7 +4,6 @@ import hashlib
 import json
 import os
 import secrets
-import shutil
 import sqlite3
 from contextlib import closing
 from dataclasses import dataclass
@@ -13,12 +12,12 @@ from typing import BinaryIO, Final
 
 from platform_agent.tenant_control import SQLiteTenantControlStore, TenantContext, TenantControlError
 
-_MAX_ARTIFACT_BYTES: Final = 2 * 1024 * 1024 * 1024  # 2 GiB per object for local backend v1
+_MAX_ARTIFACT_BYTES: Final = 2 * 1024 * 1024 * 1024  # local/on-prem backend v1
 _CHUNK_BYTES: Final = 1024 * 1024
 
 
 class ArtifactStoreError(RuntimeError):
-    """Raised when artifact integrity, isolation or persistence cannot be guaranteed."""
+    """Raised when artifact isolation, integrity or persistence cannot be guaranteed."""
 
 
 class ArtifactIntegrityError(ArtifactStoreError):
@@ -95,20 +94,26 @@ def _validate_label(value: str, *, field: str, max_length: int = 512) -> str:
     return value
 
 
+def _require_prefixed_id(value: str, *, prefix: str, field: str) -> str:
+    value = _validate_label(value, field=field, max_length=128)
+    if not value.startswith(prefix):
+        raise ValueError(f"{field} must use {prefix} prefix")
+    return value
+
+
 def _same_context(left: TenantContext, right: TenantContext) -> bool:
     return _canonical_json(left.as_dict()) == _canonical_json(right.as_dict())
 
 
 class ContentAddressedArtifactStore:
-    """Tenant-isolated local/on-prem artifact backend.
+    """Tenant-isolated, content-addressed local/on-prem artifact backend.
 
-    The object path is derived exclusively from a tenant isolation namespace and
-    SHA-256 digest. Metadata is transactional SQLite; bytes are written through a
-    private staging area and atomically promoted. Reads re-hash content before
-    returning it. Tenant quota accounting is conservative: bytes are reserved
-    before a new object is activated, so a crash can temporarily over-account but
-    cannot silently exceed quota. ``reconcile_tenant_accounting`` repairs such
-    conservative over-accounting on the next control-plane operation.
+    Objects are addressed by SHA-256 inside a tenant isolation namespace. Writes
+    are staged privately and atomically promoted; reads re-hash bytes before they
+    are returned. The tenant quota is reserved before a new object is activated,
+    so an interrupted process can conservatively over-account but never silently
+    exceed its storage allowance. The next operation reconciles that safe
+    over-accounting against committed artifact metadata.
     """
 
     def __init__(self, root: Path, tenant_store: SQLiteTenantControlStore) -> None:
@@ -237,6 +242,24 @@ class ContentAddressedArtifactStore:
         if not _same_context(snapshot.context, context):
             raise ArtifactStoreError("artifact tenant authority is stale or belongs to another project")
 
+    def _authorize_record(
+        self,
+        context: TenantContext,
+        repository_id: str,
+        record: ArtifactRecord,
+    ) -> None:
+        self._verify_current_context(context, repository_id)
+        if (
+            record.tenant_id != context.tenant_id
+            or record.project_id != context.project_id
+            or record.cell_id != context.cell_id
+            or record.repository_id != repository_id
+        ):
+            raise ArtifactStoreError("artifact does not belong to the authorized tenant workspace")
+        expected_namespace = self.tenant_store.namespace(context, "artifact")
+        if record.namespace != expected_namespace:
+            raise ArtifactStoreError("artifact namespace does not match tenant isolation cell")
+
     def put_bytes(
         self,
         context: TenantContext,
@@ -299,9 +322,9 @@ class ContentAddressedArtifactStore:
     ) -> ArtifactRecord:
         name = _validate_label(name, field="artifact name")
         media_type = _validate_label(media_type, field="media_type", max_length=256)
-        source_run_id = _validate_label(source_run_id, field="source_run_id", max_length=128)
-        execution_grant_id = _validate_label(
-            execution_grant_id, field="execution_grant_id", max_length=128
+        source_run_id = _require_prefixed_id(source_run_id, prefix="run_", field="source_run_id")
+        execution_grant_id = _require_prefixed_id(
+            execution_grant_id, prefix="sgr_", field="execution_grant_id"
         )
         self._verify_current_context(context, repository_id)
         self.reconcile_tenant_accounting(context.tenant_id)
@@ -326,18 +349,19 @@ class ContentAddressedArtifactStore:
         try:
             with closing(self._connect()) as db:
                 db.execute("BEGIN IMMEDIATE")
-                existing_artifact = db.execute(
+                existing = db.execute(
                     "SELECT * FROM artifacts WHERE artifact_id=?", (artifact_id,)
                 ).fetchone()
-                if existing_artifact is not None:
+                if existing is not None:
                     db.rollback()
                     staged.unlink(missing_ok=True)
-                    record = self._record(existing_artifact)
+                    record = self._record(existing)
+                    self._authorize_record(context, repository_id, record)
                     self._verify_object(record.namespace, record.sha256, record.size_bytes)
                     return record
 
                 object_row = db.execute(
-                    "SELECT size_bytes,relative_path FROM objects WHERE namespace=? AND sha256=?",
+                    "SELECT size_bytes FROM objects WHERE namespace=? AND sha256=?",
                     (namespace, digest),
                 ).fetchone()
                 if object_row is None:
@@ -350,10 +374,15 @@ class ContentAddressedArtifactStore:
                         os.replace(staged, object_path)
                         object_path.chmod(0o600)
                         created_object = True
-                    relative_path = object_path.relative_to(self.root).as_posix()
                     db.execute(
                         "INSERT INTO objects (namespace,sha256,size_bytes,relative_path,created_at) VALUES (?,?,?,?,?)",
-                        (namespace, digest, size, relative_path, _utc_now()),
+                        (
+                            namespace,
+                            digest,
+                            size,
+                            object_path.relative_to(self.root).as_posix(),
+                            _utc_now(),
+                        ),
                     )
                 else:
                     if int(object_row["size_bytes"]) != size:
@@ -426,38 +455,75 @@ class ContentAddressedArtifactStore:
         self._verify_path_bytes(path, digest, size_bytes)
         return path
 
-    def get_record(self, artifact_id: str) -> ArtifactRecord:
+    def _get_record_unchecked(self, artifact_id: str) -> ArtifactRecord:
         with closing(self._connect()) as db:
             row = db.execute("SELECT * FROM artifacts WHERE artifact_id=?", (artifact_id,)).fetchone()
         if row is None:
             raise ArtifactStoreError("unknown artifact")
         return self._record(row)
 
-    def read_bytes(self, artifact_id: str) -> bytes:
-        record = self.get_record(artifact_id)
+    def get_record(
+        self,
+        context: TenantContext,
+        *,
+        repository_id: str,
+        artifact_id: str,
+    ) -> ArtifactRecord:
+        record = self._get_record_unchecked(artifact_id)
+        self._authorize_record(context, repository_id, record)
+        return record
+
+    def read_bytes(
+        self,
+        context: TenantContext,
+        *,
+        repository_id: str,
+        artifact_id: str,
+    ) -> bytes:
+        record = self.get_record(context, repository_id=repository_id, artifact_id=artifact_id)
         path = self._verify_object(record.namespace, record.sha256, record.size_bytes)
         return path.read_bytes()
 
-    def list_project(self, tenant_id: str, project_id: str) -> tuple[ArtifactRecord, ...]:
+    def list_project(
+        self,
+        context: TenantContext,
+        *,
+        repository_id: str,
+    ) -> tuple[ArtifactRecord, ...]:
+        self._verify_current_context(context, repository_id)
         with closing(self._connect()) as db:
             rows = db.execute(
-                "SELECT * FROM artifacts WHERE tenant_id=? AND project_id=? ORDER BY created_at,artifact_id",
-                (tenant_id, project_id),
+                "SELECT * FROM artifacts WHERE tenant_id=? AND project_id=? AND cell_id=? AND repository_id=? ORDER BY created_at,artifact_id",
+                (context.tenant_id, context.project_id, context.cell_id, repository_id),
             ).fetchall()
         return tuple(self._record(row) for row in rows)
 
-    def export_project_manifest(self, tenant_id: str, project_id: str) -> dict[str, object]:
-        records = [record.as_dict() for record in self.list_project(tenant_id, project_id)]
+    def export_project_manifest(
+        self,
+        context: TenantContext,
+        *,
+        repository_id: str,
+    ) -> dict[str, object]:
+        records = [
+            record.as_dict() for record in self.list_project(context, repository_id=repository_id)
+        ]
         body = {
             "schema_version": "foundry.artifact-manifest.v1",
-            "tenant_id": tenant_id,
-            "project_id": project_id,
+            "tenant_context": context.as_dict(),
+            "repository_id": repository_id,
             "artifacts": records,
         }
         return {**body, "manifest_sha256": _sha256_json(body)}
 
-    def delete_artifact(self, artifact_id: str) -> None:
-        record = self.get_record(artifact_id)
+    def delete_artifact(
+        self,
+        context: TenantContext,
+        *,
+        repository_id: str,
+        artifact_id: str,
+    ) -> None:
+        record = self.get_record(context, repository_id=repository_id, artifact_id=artifact_id)
+        delete_object = False
         with closing(self._connect()) as db:
             db.execute("BEGIN IMMEDIATE")
             try:
@@ -473,16 +539,19 @@ class ContentAddressedArtifactStore:
                         "DELETE FROM objects WHERE namespace=? AND sha256=?",
                         (record.namespace, record.sha256),
                     )
-                    path = self._object_path(record.namespace, record.sha256)
-                    path.unlink(missing_ok=True)
-                    self.tenant_store.release_artifact_bytes(record.tenant_id, record.size_bytes)
+                    delete_object = True
                 db.commit()
             except Exception:
                 db.rollback()
                 raise
 
+        if delete_object:
+            path = self._object_path(record.namespace, record.sha256)
+            path.unlink(missing_ok=True)
+            self.tenant_store.release_artifact_bytes(record.tenant_id, record.size_bytes)
+
     def purge_tenant(self, tenant_id: str) -> dict[str, object]:
-        """Delete all tenant artifacts and return a deterministic deletion receipt."""
+        """Delete all tenant artifacts before tenant control-state hard deletion."""
         self.reconcile_tenant_accounting(tenant_id)
         with closing(self._connect()) as db:
             rows = db.execute(
@@ -497,17 +566,19 @@ class ContentAddressedArtifactStore:
             try:
                 db.execute("DELETE FROM artifacts WHERE tenant_id=?", (tenant_id,))
                 for row in rows:
-                    namespace = str(row["namespace"])
-                    digest = str(row["object_sha256"])
                     db.execute(
                         "DELETE FROM objects WHERE namespace=? AND sha256=?",
-                        (namespace, digest),
+                        (str(row["namespace"]), str(row["object_sha256"])),
                     )
-                    self._object_path(namespace, digest).unlink(missing_ok=True)
                 db.commit()
             except Exception:
                 db.rollback()
                 raise
+
+        for row in rows:
+            self._object_path(str(row["namespace"]), str(row["object_sha256"])).unlink(
+                missing_ok=True
+            )
         if total_bytes:
             self.tenant_store.release_artifact_bytes(tenant_id, total_bytes)
         body = {
@@ -520,7 +591,7 @@ class ContentAddressedArtifactStore:
         return {**body, "receipt_sha256": _sha256_json(body)}
 
     def reconcile_tenant_accounting(self, tenant_id: str) -> int:
-        """Repair conservative quota over/under-accounting from interrupted writes."""
+        """Repair conservative quota accounting left by an interrupted write/delete."""
         with closing(self._connect()) as db:
             expected = int(
                 db.execute(
@@ -542,7 +613,7 @@ class ContentAddressedArtifactStore:
         return expected
 
     def scrub_tenant(self, tenant_id: str) -> dict[str, object]:
-        """Re-hash every referenced tenant object and return an integrity receipt."""
+        """Re-hash every referenced object and return an integrity receipt."""
         with closing(self._connect()) as db:
             rows = db.execute(
                 "SELECT DISTINCT namespace,object_sha256,size_bytes FROM artifacts WHERE tenant_id=? ORDER BY namespace,object_sha256",
