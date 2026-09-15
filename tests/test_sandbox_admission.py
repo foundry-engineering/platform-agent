@@ -24,6 +24,7 @@ TASK = "tsk_AAAAAAAAAAAAAAAAAAAA"
 SOURCE_SHA = "a" * 64
 PLAN_GRAPH_ID = "https://foundry.engineering/schemas/plangraph/v1/plan_graph.json"
 POLICY_SCHEMA_ID = "https://foundry.engineering/schemas/policy/v1/execution_policy.json"
+GRANT_SCHEMA_ID = "https://foundry.engineering/schemas/execution/v1/execution_grant.json"
 APPROVAL_EVIDENCE = "sha256:" + "e" * 64
 CONSTRAINT_EVIDENCE = "sha256:" + "c" * 64
 
@@ -34,6 +35,20 @@ def _canonical(value: object) -> str:
 
 def _hash(value: object) -> str:
     return hashlib.sha256(_canonical(value).encode("utf-8")).hexdigest()
+
+
+def _derive_grant_id(value: object) -> str:
+    assert isinstance(value, dict)
+    material = {key: item for key, item in value.items() if key != "grant_id"}
+    return "sgr_" + _hash(material)[:32]
+
+
+def _validate_grant(value: object) -> None:
+    assert isinstance(value, dict)
+    if value.get("schema_version") != "execution-grant.v1":
+        raise ValueError("wrong grant schema")
+    if value.get("grant_id") != _derive_grant_id(value):
+        raise ValueError("wrong grant identity")
 
 
 def _policy() -> dict[str, object]:
@@ -144,8 +159,7 @@ def _admission(plan: object) -> PlanAdmission:
         "dependencies_reviewed": True,
         "routing_reviewed": True,
     }
-    admission_id = "adm_" + _hash(material)[:32]
-    return PlanAdmission(admission_id=admission_id, **material)
+    return PlanAdmission(admission_id="adm_" + _hash(material)[:32], **material)
 
 
 def _request(**overrides: object) -> ExecutionRequest:
@@ -185,16 +199,23 @@ def _request(**overrides: object) -> ExecutionRequest:
     return ExecutionRequest(**values)  # type: ignore[arg-type]
 
 
-def _install_policy_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        sandbox.importlib,
-        "import_module",
-        lambda name: SimpleNamespace(
-            EXECUTION_POLICY_ID=POLICY_SCHEMA_ID,
-            validate_execution_policy=lambda value: None,
-            execution_policy_sha256=_hash,
-        ),
-    )
+def _install_protocol_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    def load(name: str):
+        if name == "agent_protocol.execution_policy":
+            return SimpleNamespace(
+                EXECUTION_POLICY_ID=POLICY_SCHEMA_ID,
+                validate_execution_policy=lambda value: None,
+                execution_policy_sha256=_hash,
+            )
+        if name == "agent_protocol.execution_grant":
+            return SimpleNamespace(
+                EXECUTION_GRANT_ID=GRANT_SCHEMA_ID,
+                validate_execution_grant=_validate_grant,
+                derive_execution_grant_id=_derive_grant_id,
+            )
+        raise ModuleNotFoundError(name)
+
+    monkeypatch.setattr(sandbox.importlib, "import_module", load)
 
 
 def _admit(
@@ -204,7 +225,7 @@ def _admit(
     plan: dict[str, object] | None = None,
     request: ExecutionRequest | None = None,
 ):
-    _install_policy_runtime(monkeypatch)
+    _install_protocol_runtime(monkeypatch)
     active_policy = policy or _policy()
     active_plan = plan or _plan(active_policy)
     active_request = request or _request()
@@ -217,7 +238,7 @@ def _admit(
     )
 
 
-def test_valid_admission_binds_dispatch_policy_request_and_evidence(
+def test_valid_admission_emits_canonical_execution_grant(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     admitted = _admit(monkeypatch)
@@ -225,49 +246,38 @@ def test_valid_admission_binds_dispatch_policy_request_and_evidence(
     assert admitted.sandbox_admission_id.startswith("sad_")
     assert len(admitted.grants) == 1
     grant = admitted.grants[0]
-    assert grant.grant_id.startswith("sgr_")
-    assert grant.dispatch_id == admitted.dispatch_id
-    assert grant.policy_sha256 == _hash(_policy())
-    assert grant.approval_evidence_refs == (APPROVAL_EVIDENCE,)
-    assert grant.constraint_evidence_refs == (CONSTRAINT_EVIDENCE,)
+    assert grant.schema_version == "execution-grant.v1"
+    assert grant.grant_id == _derive_grant_id(grant.as_dict())
+    assert grant.authority.dispatch_id == admitted.dispatch_id
+    assert grant.authority.plan_admission_id == admitted.plan_admission_id
+    assert grant.policy_ref.policy_sha256 == _hash(_policy())
+    assert grant.approvals[0].evidence_refs == (APPROVAL_EVIDENCE,)
+    assert grant.constraint_evidence[0].evidence_ref == CONSTRAINT_EVIDENCE
 
 
 def test_admission_is_deterministic_and_recomputable(monkeypatch: pytest.MonkeyPatch) -> None:
     policy = _policy()
     plan = _plan(policy)
     request = _request()
-    _install_policy_runtime(monkeypatch)
-    admitted = admit_dispatch_to_sandbox(
-        plan,
-        admission=_admission(plan),
-        registry=_registry(),
-        requests=(request,),
-        policies={"pol_foundry_default": policy},
-    )
-    repeated = admit_dispatch_to_sandbox(
-        plan,
-        admission=_admission(plan),
-        registry=_registry(),
-        requests=(request,),
-        policies={"pol_foundry_default": policy},
-    )
+    _install_protocol_runtime(monkeypatch)
+    kwargs = {
+        "admission": _admission(plan),
+        "registry": _registry(),
+        "requests": (request,),
+        "policies": {"pol_foundry_default": policy},
+    }
+    admitted = admit_dispatch_to_sandbox(plan, **kwargs)  # type: ignore[arg-type]
+    repeated = admit_dispatch_to_sandbox(plan, **kwargs)  # type: ignore[arg-type]
 
     assert admitted.as_dict() == repeated.as_dict()
-    verify_sandbox_admission(
-        admitted,
-        plan,
-        admission=_admission(plan),
-        registry=_registry(),
-        requests=(request,),
-        policies={"pol_foundry_default": policy},
-    )
+    verify_sandbox_admission(admitted, plan, **kwargs)  # type: ignore[arg-type]
 
 
 def test_tampered_grant_fails_recomputation(monkeypatch: pytest.MonkeyPatch) -> None:
     policy = _policy()
     plan = _plan(policy)
     request = _request()
-    _install_policy_runtime(monkeypatch)
+    _install_protocol_runtime(monkeypatch)
     admitted = admit_dispatch_to_sandbox(
         plan,
         admission=_admission(plan),
@@ -289,7 +299,7 @@ def test_tampered_grant_fails_recomputation(monkeypatch: pytest.MonkeyPatch) -> 
         )
 
 
-def test_policy_runtime_unavailable_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_protocol_contracts_unavailable_fail_closed(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         sandbox.importlib,
         "import_module",
@@ -298,7 +308,7 @@ def test_policy_runtime_unavailable_fails_closed(monkeypatch: pytest.MonkeyPatch
     policy = _policy()
     plan = _plan(policy)
 
-    with pytest.raises(SandboxAdmissionError, match="validator is unavailable"):
+    with pytest.raises(SandboxAdmissionError, match="contracts are unavailable"):
         admit_dispatch_to_sandbox(
             plan,
             admission=_admission(plan),
@@ -308,20 +318,25 @@ def test_policy_runtime_unavailable_fails_closed(monkeypatch: pytest.MonkeyPatch
         )
 
 
-def test_wrong_policy_contract_version_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        sandbox.importlib,
-        "import_module",
-        lambda name: SimpleNamespace(
-            EXECUTION_POLICY_ID="https://foundry.engineering/schemas/policy/v2/execution_policy.json",
-            validate_execution_policy=lambda value: None,
-            execution_policy_sha256=_hash,
-        ),
-    )
+def test_wrong_execution_contract_version_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    def load(name: str):
+        if name == "agent_protocol.execution_policy":
+            return SimpleNamespace(
+                EXECUTION_POLICY_ID=POLICY_SCHEMA_ID,
+                validate_execution_policy=lambda value: None,
+                execution_policy_sha256=_hash,
+            )
+        return SimpleNamespace(
+            EXECUTION_GRANT_ID="https://foundry.engineering/schemas/execution/v2/execution_grant.json",
+            validate_execution_grant=_validate_grant,
+            derive_execution_grant_id=_derive_grant_id,
+        )
+
+    monkeypatch.setattr(sandbox.importlib, "import_module", load)
     policy = _policy()
     plan = _plan(policy)
 
-    with pytest.raises(SandboxAdmissionError, match="required Execution Policy v1"):
+    with pytest.raises(SandboxAdmissionError, match="required execution contracts"):
         admit_dispatch_to_sandbox(
             plan,
             admission=_admission(plan),
@@ -332,10 +347,12 @@ def test_wrong_policy_contract_version_fails_closed(monkeypatch: pytest.MonkeyPa
 
 
 def test_policy_hash_mismatch_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
-    _install_policy_runtime(monkeypatch)
+    _install_protocol_runtime(monkeypatch)
     policy = _policy()
     plan = _plan(policy)
-    plan["policy_ref"]["policy_sha256"] = "f" * 64  # type: ignore[index]
+    policy_ref = plan["policy_ref"]
+    assert isinstance(policy_ref, dict)
+    policy_ref["policy_sha256"] = "f" * 64
 
     with pytest.raises(SandboxAdmissionError, match="hash does not match"):
         admit_dispatch_to_sandbox(
@@ -348,7 +365,7 @@ def test_policy_hash_mismatch_is_rejected(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 def test_requests_must_exactly_match_ready_assignments(monkeypatch: pytest.MonkeyPatch) -> None:
-    _install_policy_runtime(monkeypatch)
+    _install_protocol_runtime(monkeypatch)
     policy = _policy()
     plan = _plan(policy)
 
@@ -374,13 +391,16 @@ def test_empty_target_scope_denies_filesystem_execution(monkeypatch: pytest.Monk
     ("request", "message"),
     [
         (_request(repo="foundry-engineering/other"), "repo does not match"),
-        (_request(write_paths=("docs/out.txt",)), "write path exceeds policy scope"),
+        (_request(write_paths=("docs/out.txt",)), "not covered by requested read scope"),
         (_request(write_paths=("src/../escape.txt",)), "path traversal"),
         (_request(write_paths=(".eng/owned.txt",)), "runtime metadata"),
         (_request(max_file_bytes=2097152), "max_file_bytes exceeds policy"),
         (_request(allow_delete=True), "delete is denied"),
         (_request(tool_ids=("tool_shell",)), "tools denied by policy"),
-        (_request(network_hosts=("api.github.com",), network_ports=(443,)), "network access is denied"),
+        (
+            _request(network_hosts=("api.github.com",), network_ports=(443,)),
+            "network access is denied",
+        ),
         (_request(environment_keys=("GITHUB_TOKEN",)), "environment request is denied"),
         (
             _request(
@@ -420,7 +440,7 @@ def test_policy_and_scope_violations_fail_closed(
 
 
 def test_stale_plan_admission_stops_before_sandbox(monkeypatch: pytest.MonkeyPatch) -> None:
-    _install_policy_runtime(monkeypatch)
+    _install_protocol_runtime(monkeypatch)
     policy = _policy()
     plan = _plan(policy)
     admitted_plan = _admission(plan)
