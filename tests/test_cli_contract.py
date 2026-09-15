@@ -11,13 +11,18 @@ def test_health_output(capsys) -> None:
     assert capsys.readouterr().out.strip() == "ok"
 
 
-def test_cli_command_tree_contains_health_and_plan() -> None:
+def test_cli_command_tree_contains_health_and_plan_controls() -> None:
     cmd = typer.main.get_command(app)
     commands = getattr(cmd, "commands", None)
 
     assert isinstance(commands, dict)
     assert "health" in commands
     assert "plan" in commands
+
+    plan = commands["plan"]
+    plan_commands = getattr(plan, "commands", None)
+    assert isinstance(plan_commands, dict)
+    assert set(plan_commands) >= {"inspect", "parse", "admit"}
 
 
 def test_plan_inspect_emits_canonical_json(tmp_path) -> None:
