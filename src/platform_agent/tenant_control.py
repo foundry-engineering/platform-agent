@@ -8,7 +8,7 @@ from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Final, Literal
+from typing import Final, Literal, cast
 
 TenantStatus = Literal["active", "suspended", "deleting", "deleted"]
 ProjectStatus = Literal["active", "suspended", "deleting", "deleted"]
@@ -22,15 +22,15 @@ _NAMESPACE_KINDS: Final = frozenset(
 
 
 class TenantControlError(RuntimeError):
-    """Base error for tenant control-plane state failures."""
+    pass
 
 
 class TenantNotActiveError(TenantControlError):
-    """Raised when execution is attempted for a non-active tenant/project."""
+    pass
 
 
 class TenantQuotaError(TenantControlError):
-    """Raised when a tenant quota cannot be reserved."""
+    pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,7 +38,7 @@ class TenantQuotaLimits:
     max_active_runs: int = 32
     max_projects: int = 64
     max_repositories_per_project: int = 64
-    max_artifact_bytes: int = 107_374_182_400  # 100 GiB
+    max_artifact_bytes: int = 107_374_182_400
 
     def __post_init__(self) -> None:
         values = (
@@ -65,10 +65,7 @@ class TenantQuotaUsage:
     artifact_bytes: int
 
     def as_dict(self) -> dict[str, int]:
-        return {
-            "active_runs": self.active_runs,
-            "artifact_bytes": self.artifact_bytes,
-        }
+        return {"active_runs": self.active_runs, "artifact_bytes": self.artifact_bytes}
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,11 +130,18 @@ def _sha256(value: object) -> str:
     return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
 
 
+def _reject_symlink_path(path: Path) -> Path:
+    raw = path.expanduser()
+    for candidate in (raw, *raw.parents):
+        if candidate.exists() and candidate.is_symlink():
+            raise TenantControlError(f"tenant database path traverses symlink: {candidate}")
+    return raw.resolve(strict=False)
+
+
 def _require_identifier(value: str, *, prefix: str, field: str) -> str:
     if not isinstance(value, str) or not value.startswith(prefix) or len(value) < len(prefix) + 8:
-        raise ValueError(f"{field} must start with {prefix!r} and contain at least 8 id characters")
-    tail = value[len(prefix) :]
-    if any(ch not in "abcdefghijklmnopqrstuvwxyz0123456789_-" for ch in tail):
+        raise ValueError(f"{field} must use {prefix} prefix and at least 8 id characters")
+    if any(ch not in "abcdefghijklmnopqrstuvwxyz0123456789_-" for ch in value[len(prefix) :]):
         raise ValueError(f"{field} contains unsupported characters")
     return value
 
@@ -152,37 +156,33 @@ def _require_keyset_id(value: str) -> str:
 
 def _require_repository_id(value: str) -> str:
     parts = value.split("/")
+    allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-")
     if len(parts) != 2 or any(not part for part in parts):
         raise ValueError("repository_id must use owner/repository form")
-    allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-")
     if any(any(ch not in allowed for ch in part) for part in parts):
         raise ValueError("repository_id contains unsupported characters")
     return value
 
 
 class SQLiteTenantControlStore:
-    """Persistent single-node/on-prem tenant control plane.
-
-    All quota reservations and authority-epoch mutations use SQLite immediate
-    transactions so two local workers cannot over-admit the same quota. The
-    interface is intentionally storage-agnostic at call sites; distributed
-    deployments can implement the same semantics with a transactional database.
-    """
+    """Persistent, transactional tenant control plane for single-node/on-prem Foundry."""
 
     def __init__(self, path: Path) -> None:
-        self.path = path.resolve()
+        self.path = _reject_symlink_path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        if self.path.is_symlink():
-            raise TenantControlError("tenant database path must not be a symlink")
         self._initialize()
+        try:
+            self.path.chmod(0o600)
+        except OSError as exc:
+            raise TenantControlError("failed to restrict tenant database permissions") from exc
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path, timeout=30.0, isolation_level=None)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA busy_timeout = 30000")
-        connection.execute("PRAGMA journal_mode = WAL")
-        return connection
+        db = sqlite3.connect(self.path, timeout=30.0, isolation_level=None)
+        db.row_factory = sqlite3.Row
+        db.execute("PRAGMA foreign_keys = ON")
+        db.execute("PRAGMA busy_timeout = 30000")
+        db.execute("PRAGMA journal_mode = WAL")
+        return db
 
     def _initialize(self) -> None:
         with closing(self._connect()) as db:
@@ -207,12 +207,11 @@ class SQLiteTenantControlStore:
                     updated_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS repositories (
-                    tenant_id TEXT NOT NULL,
+                    tenant_id TEXT NOT NULL REFERENCES tenants(tenant_id) ON DELETE CASCADE,
                     project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
                     repository_id TEXT NOT NULL,
                     created_at TEXT NOT NULL,
-                    PRIMARY KEY (tenant_id, project_id, repository_id),
-                    FOREIGN KEY (tenant_id) REFERENCES tenants(tenant_id) ON DELETE CASCADE
+                    PRIMARY KEY (tenant_id, project_id, repository_id)
                 );
                 CREATE TABLE IF NOT EXISTS run_reservations (
                     reservation_id TEXT PRIMARY KEY,
@@ -222,11 +221,81 @@ class SQLiteTenantControlStore:
                     created_at TEXT NOT NULL,
                     UNIQUE (tenant_id, run_key)
                 );
+                CREATE TABLE IF NOT EXISTS authority_events (
+                    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_id TEXT NOT NULL UNIQUE,
+                    tenant_id TEXT NOT NULL,
+                    project_id TEXT,
+                    kind TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    old_epoch INTEGER NOT NULL,
+                    new_epoch INTEGER NOT NULL,
+                    occurred_at TEXT NOT NULL,
+                    prev_event_sha256 TEXT,
+                    event_sha256 TEXT NOT NULL
+                );
                 CREATE INDEX IF NOT EXISTS idx_projects_tenant ON projects(tenant_id);
                 CREATE INDEX IF NOT EXISTS idx_repositories_project ON repositories(tenant_id, project_id);
                 CREATE INDEX IF NOT EXISTS idx_runs_tenant ON run_reservations(tenant_id);
+                CREATE INDEX IF NOT EXISTS idx_authority_events_tenant ON authority_events(tenant_id, sequence);
                 """
             )
+
+    def _append_event(
+        self,
+        db: sqlite3.Connection,
+        *,
+        tenant_id: str,
+        project_id: str | None,
+        kind: str,
+        reason: str,
+        old_epoch: int,
+        new_epoch: int,
+    ) -> str:
+        if not reason.strip():
+            raise ValueError("authority event reason is required")
+        previous = db.execute(
+            "SELECT event_sha256 FROM authority_events WHERE tenant_id=? ORDER BY sequence DESC LIMIT 1",
+            (tenant_id,),
+        ).fetchone()
+        prev_sha = None if previous is None else str(previous["event_sha256"])
+        occurred_at = _utc_now()
+        material = {
+            "schema_version": "foundry.authority-event.v1",
+            "tenant_id": tenant_id,
+            "project_id": project_id,
+            "kind": kind,
+            "reason": reason.strip(),
+            "old_epoch": old_epoch,
+            "new_epoch": new_epoch,
+            "occurred_at": occurred_at,
+            "prev_event_sha256": prev_sha,
+        }
+        event_sha = _sha256(material)
+        event_id = "evt_" + event_sha[:32]
+        db.execute(
+            "INSERT INTO authority_events (event_id,tenant_id,project_id,kind,reason,old_epoch,new_epoch,occurred_at,prev_event_sha256,event_sha256) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                event_id,
+                tenant_id,
+                project_id,
+                kind,
+                reason.strip(),
+                old_epoch,
+                new_epoch,
+                occurred_at,
+                prev_sha,
+                event_sha,
+            ),
+        )
+        return event_id
+
+    @staticmethod
+    def _limits(row: sqlite3.Row) -> TenantQuotaLimits:
+        raw = json.loads(str(row["quotas_json"]))
+        if not isinstance(raw, dict):
+            raise TenantControlError("stored quota policy is invalid")
+        return TenantQuotaLimits(**raw)
 
     def create_tenant(
         self,
@@ -240,12 +309,24 @@ class SQLiteTenantControlStore:
         limits = quotas or TenantQuotaLimits()
         now = _utc_now()
         with closing(self._connect()) as db:
+            db.execute("BEGIN IMMEDIATE")
             try:
                 db.execute(
                     "INSERT INTO tenants (tenant_id,status,authority_epoch,keyset_id,quotas_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?)",
                     (tenant_id, "active", 1, keyset_id, _canonical_json(limits.as_dict()), now, now),
                 )
+                self._append_event(
+                    db,
+                    tenant_id=tenant_id,
+                    project_id=None,
+                    kind="tenant.create",
+                    reason="tenant created",
+                    old_epoch=0,
+                    new_epoch=1,
+                )
+                db.commit()
             except sqlite3.IntegrityError as exc:
+                db.rollback()
                 raise TenantControlError(f"tenant already exists or is invalid: {tenant_id}") from exc
 
     def create_project(self, tenant_id: str, project_id: str) -> TenantContext:
@@ -261,10 +342,10 @@ class SQLiteTenantControlStore:
                     (tenant_id,),
                 ).fetchone()
                 if tenant is None:
-                    raise TenantControlError(f"unknown tenant: {tenant_id}")
+                    raise TenantControlError("unknown tenant")
                 if tenant["status"] != "active":
-                    raise TenantNotActiveError(f"tenant is not active: {tenant_id}")
-                limits = TenantQuotaLimits(**json.loads(str(tenant["quotas_json"])))
+                    raise TenantNotActiveError("tenant is not active")
+                limits = self._limits(tenant)
                 count = int(
                     db.execute(
                         "SELECT COUNT(*) FROM projects WHERE tenant_id=? AND status != 'deleted'",
@@ -277,28 +358,36 @@ class SQLiteTenantControlStore:
                     "INSERT INTO projects (project_id,tenant_id,status,cell_id,created_at,updated_at) VALUES (?,?,?,?,?,?)",
                     (project_id, tenant_id, "active", cell_id, now, now),
                 )
+                epoch = int(tenant["authority_epoch"])
+                self._append_event(
+                    db,
+                    tenant_id=tenant_id,
+                    project_id=project_id,
+                    kind="project.create",
+                    reason="project created",
+                    old_epoch=epoch,
+                    new_epoch=epoch,
+                )
                 db.commit()
+                return TenantContext(
+                    tenant_id=tenant_id,
+                    project_id=project_id,
+                    cell_id=cell_id,
+                    authority_epoch=epoch,
+                    keyset_id=str(tenant["keyset_id"]),
+                )
             except Exception:
                 db.rollback()
                 raise
-        return TenantContext(
-            tenant_id=tenant_id,
-            project_id=project_id,
-            cell_id=cell_id,
-            authority_epoch=int(tenant["authority_epoch"]),
-            keyset_id=str(tenant["keyset_id"]),
-        )
 
     def bind_repository(self, tenant_id: str, project_id: str, repository_id: str) -> None:
-        tenant_id = _require_identifier(tenant_id, prefix="tnt_", field="tenant_id")
-        project_id = _require_identifier(project_id, prefix="prj_", field="project_id")
         repository_id = _require_repository_id(repository_id)
-        now = _utc_now()
         with closing(self._connect()) as db:
             db.execute("BEGIN IMMEDIATE")
             try:
                 tenant = db.execute(
-                    "SELECT status,quotas_json FROM tenants WHERE tenant_id=?", (tenant_id,)
+                    "SELECT status,authority_epoch,quotas_json FROM tenants WHERE tenant_id=?",
+                    (tenant_id,),
                 ).fetchone()
                 project = db.execute(
                     "SELECT tenant_id,status FROM projects WHERE project_id=?", (project_id,)
@@ -307,13 +396,6 @@ class SQLiteTenantControlStore:
                     raise TenantControlError("unknown tenant/project binding")
                 if tenant["status"] != "active" or project["status"] != "active":
                     raise TenantNotActiveError("tenant/project is not active")
-                limits = TenantQuotaLimits(**json.loads(str(tenant["quotas_json"])))
-                count = int(
-                    db.execute(
-                        "SELECT COUNT(*) FROM repositories WHERE tenant_id=? AND project_id=?",
-                        (tenant_id, project_id),
-                    ).fetchone()[0]
-                )
                 exists = db.execute(
                     "SELECT 1 FROM repositories WHERE tenant_id=? AND project_id=? AND repository_id=?",
                     (tenant_id, project_id, repository_id),
@@ -321,16 +403,81 @@ class SQLiteTenantControlStore:
                 if exists is not None:
                     db.rollback()
                     return
+                limits = self._limits(tenant)
+                count = int(
+                    db.execute(
+                        "SELECT COUNT(*) FROM repositories WHERE tenant_id=? AND project_id=?",
+                        (tenant_id, project_id),
+                    ).fetchone()[0]
+                )
                 if count >= limits.max_repositories_per_project:
                     raise TenantQuotaError("project repository quota exceeded")
                 db.execute(
                     "INSERT INTO repositories (tenant_id,project_id,repository_id,created_at) VALUES (?,?,?,?)",
-                    (tenant_id, project_id, repository_id, now),
+                    (tenant_id, project_id, repository_id, _utc_now()),
+                )
+                epoch = int(tenant["authority_epoch"])
+                self._append_event(
+                    db,
+                    tenant_id=tenant_id,
+                    project_id=project_id,
+                    kind="repository.bind",
+                    reason=f"repository bound: {repository_id}",
+                    old_epoch=epoch,
+                    new_epoch=epoch,
                 )
                 db.commit()
             except Exception:
                 if db.in_transaction:
                     db.rollback()
+                raise
+
+    def unbind_repository(
+        self,
+        tenant_id: str,
+        project_id: str,
+        repository_id: str,
+        *,
+        reason: str,
+    ) -> int:
+        repository_id = _require_repository_id(repository_id)
+        with closing(self._connect()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                tenant = db.execute(
+                    "SELECT authority_epoch FROM tenants WHERE tenant_id=?", (tenant_id,)
+                ).fetchone()
+                if tenant is None:
+                    raise TenantControlError("unknown tenant")
+                cursor = db.execute(
+                    "DELETE FROM repositories WHERE tenant_id=? AND project_id=? AND repository_id=?",
+                    (tenant_id, project_id, repository_id),
+                )
+                if cursor.rowcount != 1:
+                    raise TenantControlError("repository binding does not exist")
+                old_epoch = int(tenant["authority_epoch"])
+                new_epoch = old_epoch + 1
+                db.execute(
+                    "UPDATE tenants SET authority_epoch=?,updated_at=? WHERE tenant_id=?",
+                    (new_epoch, _utc_now(), tenant_id),
+                )
+                db.execute(
+                    "DELETE FROM run_reservations WHERE tenant_id=? AND project_id=?",
+                    (tenant_id, project_id),
+                )
+                self._append_event(
+                    db,
+                    tenant_id=tenant_id,
+                    project_id=project_id,
+                    kind="repository.unbind",
+                    reason=reason,
+                    old_epoch=old_epoch,
+                    new_epoch=new_epoch,
+                )
+                db.commit()
+                return new_epoch
+            except Exception:
+                db.rollback()
                 raise
 
     def snapshot(
@@ -346,8 +493,7 @@ class SQLiteTenantControlStore:
                 (tenant_id,),
             ).fetchone()
             project = db.execute(
-                "SELECT tenant_id,status,cell_id FROM projects WHERE project_id=?",
-                (project_id,),
+                "SELECT tenant_id,status,cell_id FROM projects WHERE project_id=?", (project_id,)
             ).fetchone()
             repo = db.execute(
                 "SELECT 1 FROM repositories WHERE tenant_id=? AND project_id=? AND repository_id=?",
@@ -368,11 +514,8 @@ class SQLiteTenantControlStore:
             raise TenantControlError("stored tenant/project status is invalid")
         if tenant_status != "active" or project_status != "active":
             raise TenantNotActiveError("tenant/project is not active")
-        quotas = TenantQuotaLimits(**json.loads(str(tenant["quotas_json"])))
-        usage = TenantQuotaUsage(
-            active_runs=active_runs,
-            artifact_bytes=int(tenant["artifact_bytes"]),
-        )
+        quotas = self._limits(tenant)
+        usage = TenantQuotaUsage(active_runs=active_runs, artifact_bytes=int(tenant["artifact_bytes"]))
         context = TenantContext(
             tenant_id=tenant_id,
             project_id=project_id,
@@ -409,9 +552,8 @@ class SQLiteTenantControlStore:
     ) -> RunReservation:
         if not run_key or len(run_key) > 256:
             raise ValueError("run_key must be a non-empty bounded string")
-        snapshot = self.snapshot(tenant_id, project_id, repository_id)
+        repository_id = _require_repository_id(repository_id)
         reservation_id = "rsv_" + secrets.token_hex(16)
-        now = _utc_now()
         with closing(self._connect()) as db:
             db.execute("BEGIN IMMEDIATE")
             try:
@@ -421,15 +563,20 @@ class SQLiteTenantControlStore:
                 project = db.execute(
                     "SELECT status,tenant_id FROM projects WHERE project_id=?", (project_id,)
                 ).fetchone()
+                repo = db.execute(
+                    "SELECT 1 FROM repositories WHERE tenant_id=? AND project_id=? AND repository_id=?",
+                    (tenant_id, project_id, repository_id),
+                ).fetchone()
                 if (
                     tenant is None
                     or project is None
                     or str(project["tenant_id"]) != tenant_id
-                    or tenant["status"] != "active"
-                    or project["status"] != "active"
+                    or repo is None
                 ):
-                    raise TenantNotActiveError("tenant/project became inactive before reservation")
-                limits = TenantQuotaLimits(**json.loads(str(tenant["quotas_json"])))
+                    raise TenantControlError("unknown tenant/project/repository binding")
+                if tenant["status"] != "active" or project["status"] != "active":
+                    raise TenantNotActiveError("tenant/project is not active")
+                limits = self._limits(tenant)
                 active = int(
                     db.execute(
                         "SELECT COUNT(*) FROM run_reservations WHERE tenant_id=?", (tenant_id,)
@@ -437,16 +584,10 @@ class SQLiteTenantControlStore:
                 )
                 if active >= limits.max_active_runs:
                     raise TenantQuotaError("tenant active-run quota exceeded")
-                repo = db.execute(
-                    "SELECT 1 FROM repositories WHERE tenant_id=? AND project_id=? AND repository_id=?",
-                    (tenant_id, project_id, repository_id),
-                ).fetchone()
-                if repo is None:
-                    raise TenantControlError("repository binding disappeared before reservation")
                 try:
                     db.execute(
                         "INSERT INTO run_reservations (reservation_id,tenant_id,project_id,run_key,created_at) VALUES (?,?,?,?,?)",
-                        (reservation_id, tenant_id, project_id, run_key, now),
+                        (reservation_id, tenant_id, project_id, run_key, _utc_now()),
                     )
                 except sqlite3.IntegrityError as exc:
                     raise TenantControlError("run_key already reserved for tenant") from exc
@@ -454,14 +595,7 @@ class SQLiteTenantControlStore:
             except Exception:
                 db.rollback()
                 raise
-        if snapshot.context.authority_epoch < 1:
-            raise TenantControlError("invalid authority epoch")
-        return RunReservation(
-            reservation_id=reservation_id,
-            tenant_id=tenant_id,
-            project_id=project_id,
-            run_key=run_key,
-        )
+        return RunReservation(reservation_id, tenant_id, project_id, run_key)
 
     def release_run(self, reservation_id: str) -> None:
         if not reservation_id.startswith("rsv_"):
@@ -487,10 +621,8 @@ class SQLiteTenantControlStore:
                     raise TenantControlError("unknown tenant")
                 if tenant["status"] != "active":
                     raise TenantNotActiveError("tenant is not active")
-                limits = TenantQuotaLimits(**json.loads(str(tenant["quotas_json"])))
-                current = int(tenant["artifact_bytes"])
-                updated = current + byte_count
-                if updated > limits.max_artifact_bytes:
+                updated = int(tenant["artifact_bytes"]) + byte_count
+                if updated > self._limits(tenant).max_artifact_bytes:
                     raise TenantQuotaError("tenant artifact-byte quota exceeded")
                 db.execute(
                     "UPDATE tenants SET artifact_bytes=?,updated_at=? WHERE tenant_id=?",
@@ -526,45 +658,47 @@ class SQLiteTenantControlStore:
                 db.rollback()
                 raise
 
-    def bump_authority_epoch(self, tenant_id: str, *, reason: str) -> int:
-        if not reason.strip():
-            raise ValueError("revocation reason is required")
-        with closing(self._connect()) as db:
-            db.execute("BEGIN IMMEDIATE")
-            try:
-                tenant = db.execute(
-                    "SELECT authority_epoch FROM tenants WHERE tenant_id=?", (tenant_id,)
-                ).fetchone()
-                if tenant is None:
-                    raise TenantControlError("unknown tenant")
-                updated = int(tenant["authority_epoch"]) + 1
-                db.execute(
-                    "UPDATE tenants SET authority_epoch=?,updated_at=? WHERE tenant_id=?",
-                    (updated, _utc_now(), tenant_id),
-                )
-                db.execute(
-                    "DELETE FROM run_reservations WHERE tenant_id=?", (tenant_id,)
-                )
-                db.commit()
-                return updated
-            except Exception:
-                db.rollback()
-                raise
+    def _mutate_epoch(
+        self,
+        db: sqlite3.Connection,
+        tenant_id: str,
+        *,
+        project_id: str | None,
+        kind: str,
+        reason: str,
+    ) -> tuple[int, int]:
+        tenant = db.execute(
+            "SELECT authority_epoch FROM tenants WHERE tenant_id=?", (tenant_id,)
+        ).fetchone()
+        if tenant is None:
+            raise TenantControlError("unknown tenant")
+        old_epoch = int(tenant["authority_epoch"])
+        new_epoch = old_epoch + 1
+        db.execute(
+            "UPDATE tenants SET authority_epoch=?,updated_at=? WHERE tenant_id=?",
+            (new_epoch, _utc_now(), tenant_id),
+        )
+        self._append_event(
+            db,
+            tenant_id=tenant_id,
+            project_id=project_id,
+            kind=kind,
+            reason=reason,
+            old_epoch=old_epoch,
+            new_epoch=new_epoch,
+        )
+        return old_epoch, new_epoch
 
-    def rotate_keyset(self, tenant_id: str, *, keyset_id: str) -> int:
-        keyset_id = _require_keyset_id(keyset_id)
+    def bump_authority_epoch(self, tenant_id: str, *, reason: str) -> int:
         with closing(self._connect()) as db:
             db.execute("BEGIN IMMEDIATE")
             try:
-                tenant = db.execute(
-                    "SELECT authority_epoch FROM tenants WHERE tenant_id=?", (tenant_id,)
-                ).fetchone()
-                if tenant is None:
-                    raise TenantControlError("unknown tenant")
-                epoch = int(tenant["authority_epoch"]) + 1
-                db.execute(
-                    "UPDATE tenants SET keyset_id=?,authority_epoch=?,updated_at=? WHERE tenant_id=?",
-                    (keyset_id, epoch, _utc_now(), tenant_id),
+                _, epoch = self._mutate_epoch(
+                    db,
+                    tenant_id,
+                    project_id=None,
+                    kind="authority.revoke",
+                    reason=reason,
                 )
                 db.execute("DELETE FROM run_reservations WHERE tenant_id=?", (tenant_id,))
                 db.commit()
@@ -573,33 +707,99 @@ class SQLiteTenantControlStore:
                 db.rollback()
                 raise
 
-    def set_tenant_status(self, tenant_id: str, status: TenantStatus) -> int:
-        if status not in _TENANT_STATUSES:
-            raise ValueError("invalid tenant status")
+    def rotate_keyset(self, tenant_id: str, *, keyset_id: str, reason: str) -> int:
+        keyset_id = _require_keyset_id(keyset_id)
         with closing(self._connect()) as db:
             db.execute("BEGIN IMMEDIATE")
             try:
-                tenant = db.execute(
-                    "SELECT authority_epoch,status FROM tenants WHERE tenant_id=?", (tenant_id,)
-                ).fetchone()
-                if tenant is None:
-                    raise TenantControlError("unknown tenant")
-                epoch = int(tenant["authority_epoch"])
-                if str(tenant["status"]) != status:
-                    epoch += 1
-                db.execute(
-                    "UPDATE tenants SET status=?,authority_epoch=?,updated_at=? WHERE tenant_id=?",
-                    (status, epoch, _utc_now(), tenant_id),
+                _, epoch = self._mutate_epoch(
+                    db,
+                    tenant_id,
+                    project_id=None,
+                    kind="keyset.rotate",
+                    reason=reason,
                 )
-                if status != "active":
-                    db.execute("DELETE FROM run_reservations WHERE tenant_id=?", (tenant_id,))
+                db.execute(
+                    "UPDATE tenants SET keyset_id=?,updated_at=? WHERE tenant_id=?",
+                    (keyset_id, _utc_now(), tenant_id),
+                )
+                db.execute("DELETE FROM run_reservations WHERE tenant_id=?", (tenant_id,))
                 db.commit()
                 return epoch
             except Exception:
                 db.rollback()
                 raise
 
-    def set_project_status(self, tenant_id: str, project_id: str, status: ProjectStatus) -> int:
+    def update_quotas(
+        self,
+        tenant_id: str,
+        quotas: TenantQuotaLimits,
+        *,
+        reason: str,
+    ) -> int:
+        with closing(self._connect()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                _, epoch = self._mutate_epoch(
+                    db,
+                    tenant_id,
+                    project_id=None,
+                    kind="quota.update",
+                    reason=reason,
+                )
+                db.execute(
+                    "UPDATE tenants SET quotas_json=?,updated_at=? WHERE tenant_id=?",
+                    (_canonical_json(quotas.as_dict()), _utc_now(), tenant_id),
+                )
+                db.commit()
+                return epoch
+            except Exception:
+                db.rollback()
+                raise
+
+    def set_tenant_status(self, tenant_id: str, status: TenantStatus, *, reason: str) -> int:
+        if status not in _TENANT_STATUSES:
+            raise ValueError("invalid tenant status")
+        with closing(self._connect()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                tenant = db.execute(
+                    "SELECT status,authority_epoch FROM tenants WHERE tenant_id=?", (tenant_id,)
+                ).fetchone()
+                if tenant is None:
+                    raise TenantControlError("unknown tenant")
+                old_status = str(tenant["status"])
+                if old_status == status:
+                    db.rollback()
+                    return int(tenant["authority_epoch"])
+                _, epoch = self._mutate_epoch(
+                    db,
+                    tenant_id,
+                    project_id=None,
+                    kind="tenant.status",
+                    reason=f"{reason.strip()} ({old_status}->{status})",
+                )
+                db.execute(
+                    "UPDATE tenants SET status=?,updated_at=? WHERE tenant_id=?",
+                    (status, _utc_now(), tenant_id),
+                )
+                if status != "active":
+                    db.execute("DELETE FROM run_reservations WHERE tenant_id=?", (tenant_id,))
+                db.commit()
+                return epoch
+            except Exception:
+                if db.in_transaction:
+                    db.rollback()
+                raise
+
+    def set_project_status(
+        self,
+        tenant_id: str,
+        project_id: str,
+        status: ProjectStatus,
+        *,
+        reason: str,
+    ) -> int:
         if status not in _PROJECT_STATUSES:
             raise ValueError("invalid project status")
         with closing(self._connect()) as db:
@@ -608,21 +808,27 @@ class SQLiteTenantControlStore:
                 project = db.execute(
                     "SELECT tenant_id,status FROM projects WHERE project_id=?", (project_id,)
                 ).fetchone()
-                tenant = db.execute(
-                    "SELECT authority_epoch FROM tenants WHERE tenant_id=?", (tenant_id,)
-                ).fetchone()
-                if project is None or tenant is None or str(project["tenant_id"]) != tenant_id:
+                if project is None or str(project["tenant_id"]) != tenant_id:
                     raise TenantControlError("unknown tenant/project binding")
-                epoch = int(tenant["authority_epoch"])
-                if str(project["status"]) != status:
-                    epoch += 1
+                old_status = str(project["status"])
+                if old_status == status:
+                    tenant = db.execute(
+                        "SELECT authority_epoch FROM tenants WHERE tenant_id=?", (tenant_id,)
+                    ).fetchone()
+                    if tenant is None:
+                        raise TenantControlError("unknown tenant")
+                    db.rollback()
+                    return int(tenant["authority_epoch"])
+                _, epoch = self._mutate_epoch(
+                    db,
+                    tenant_id,
+                    project_id=project_id,
+                    kind="project.status",
+                    reason=f"{reason.strip()} ({old_status}->{status})",
+                )
                 db.execute(
                     "UPDATE projects SET status=?,updated_at=? WHERE project_id=?",
                     (status, _utc_now(), project_id),
-                )
-                db.execute(
-                    "UPDATE tenants SET authority_epoch=?,updated_at=? WHERE tenant_id=?",
-                    (epoch, _utc_now(), tenant_id),
                 )
                 if status != "active":
                     db.execute(
@@ -632,7 +838,8 @@ class SQLiteTenantControlStore:
                 db.commit()
                 return epoch
             except Exception:
-                db.rollback()
+                if db.in_transaction:
+                    db.rollback()
                 raise
 
     def namespace(self, context: TenantContext, kind: NamespaceKind) -> str:
@@ -647,23 +854,22 @@ class SQLiteTenantControlStore:
         )[:32]
         return f"ns_{kind.replace('-', '_')}_{digest}"
 
-    def export_tenant_state(self, tenant_id: str) -> dict[str, object]:
-        with closing(self._connect()) as db:
-            tenant = db.execute(
-                "SELECT tenant_id,status,authority_epoch,keyset_id,quotas_json,artifact_bytes,created_at,updated_at FROM tenants WHERE tenant_id=?",
-                (tenant_id,),
-            ).fetchone()
-            if tenant is None:
-                raise TenantControlError("unknown tenant")
-            projects = db.execute(
-                "SELECT project_id,status,cell_id,created_at,updated_at FROM projects WHERE tenant_id=? ORDER BY project_id",
-                (tenant_id,),
-            ).fetchall()
-            repositories = db.execute(
-                "SELECT project_id,repository_id,created_at FROM repositories WHERE tenant_id=? ORDER BY project_id,repository_id",
-                (tenant_id,),
-            ).fetchall()
-        body: dict[str, object] = {
+    def _export_body(self, db: sqlite3.Connection, tenant_id: str) -> dict[str, object]:
+        tenant = db.execute(
+            "SELECT tenant_id,status,authority_epoch,keyset_id,quotas_json,artifact_bytes,created_at,updated_at FROM tenants WHERE tenant_id=?",
+            (tenant_id,),
+        ).fetchone()
+        if tenant is None:
+            raise TenantControlError("unknown tenant")
+        projects = db.execute(
+            "SELECT project_id,status,cell_id,created_at,updated_at FROM projects WHERE tenant_id=? ORDER BY project_id",
+            (tenant_id,),
+        ).fetchall()
+        repositories = db.execute(
+            "SELECT project_id,repository_id,created_at FROM repositories WHERE tenant_id=? ORDER BY project_id,repository_id",
+            (tenant_id,),
+        ).fetchall()
+        return {
             "schema_version": "foundry.tenant-state-export.v1",
             "tenant": {
                 "tenant_id": str(tenant["tenant_id"]),
@@ -678,4 +884,89 @@ class SQLiteTenantControlStore:
             "projects": [dict(row) for row in projects],
             "repositories": [dict(row) for row in repositories],
         }
+
+    def export_tenant_state(self, tenant_id: str) -> dict[str, object]:
+        with closing(self._connect()) as db:
+            body = self._export_body(db, tenant_id)
         return {**body, "export_sha256": _sha256(body)}
+
+    def hard_delete_tenant_state(self, tenant_id: str, *, reason: str) -> dict[str, object]:
+        """Delete persistent tenant control state after isolation data has been drained."""
+        with closing(self._connect()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                tenant = db.execute(
+                    "SELECT status,authority_epoch,artifact_bytes FROM tenants WHERE tenant_id=?",
+                    (tenant_id,),
+                ).fetchone()
+                if tenant is None:
+                    raise TenantControlError("unknown tenant")
+                if tenant["status"] != "deleting":
+                    raise TenantControlError("tenant must be in deleting state before hard delete")
+                if int(tenant["artifact_bytes"]) != 0:
+                    raise TenantControlError("tenant artifacts must be deleted before control-state delete")
+                active = int(
+                    db.execute(
+                        "SELECT COUNT(*) FROM run_reservations WHERE tenant_id=?", (tenant_id,)
+                    ).fetchone()[0]
+                )
+                if active != 0:
+                    raise TenantControlError("tenant has active run reservations")
+                body = self._export_body(db, tenant_id)
+                epoch = int(tenant["authority_epoch"])
+                deletion_time = _utc_now()
+                receipt_material = {
+                    "schema_version": "foundry.tenant-control-deletion-receipt.v1",
+                    "tenant_id": tenant_id,
+                    "last_authority_epoch": epoch,
+                    "state_export_sha256": _sha256(body),
+                    "reason": reason.strip(),
+                    "deleted_at": deletion_time,
+                }
+                if not receipt_material["reason"]:
+                    raise ValueError("delete reason is required")
+                self._append_event(
+                    db,
+                    tenant_id=tenant_id,
+                    project_id=None,
+                    kind="tenant.delete",
+                    reason=reason,
+                    old_epoch=epoch,
+                    new_epoch=epoch + 1,
+                )
+                db.execute("DELETE FROM tenants WHERE tenant_id=?", (tenant_id,))
+                db.commit()
+                return {
+                    **receipt_material,
+                    "deletion_receipt_sha256": _sha256(receipt_material),
+                }
+            except Exception:
+                db.rollback()
+                raise
+
+    def verify_authority_event_chain(self, tenant_id: str) -> bool:
+        with closing(self._connect()) as db:
+            rows = db.execute(
+                "SELECT tenant_id,project_id,kind,reason,old_epoch,new_epoch,occurred_at,prev_event_sha256,event_sha256 FROM authority_events WHERE tenant_id=? ORDER BY sequence",
+                (tenant_id,),
+            ).fetchall()
+        previous: str | None = None
+        for row in rows:
+            if row["prev_event_sha256"] != previous:
+                raise TenantControlError("authority event chain predecessor mismatch")
+            material = {
+                "schema_version": "foundry.authority-event.v1",
+                "tenant_id": str(row["tenant_id"]),
+                "project_id": None if row["project_id"] is None else str(row["project_id"]),
+                "kind": str(row["kind"]),
+                "reason": str(row["reason"]),
+                "old_epoch": int(row["old_epoch"]),
+                "new_epoch": int(row["new_epoch"]),
+                "occurred_at": str(row["occurred_at"]),
+                "prev_event_sha256": previous,
+            }
+            expected = _sha256(material)
+            if str(row["event_sha256"]) != expected:
+                raise TenantControlError("authority event chain hash mismatch")
+            previous = expected
+        return True
