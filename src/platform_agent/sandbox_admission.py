@@ -14,15 +14,18 @@ from platform_agent.control_plane import DispatchPlan, TaskAssignment, build_dis
 from platform_agent.plan_admission import PlanAdmission
 
 _EXECUTION_POLICY_ID = "https://foundry.engineering/schemas/policy/v1/execution_policy.json"
+_EXECUTION_GRANT_ID = "https://foundry.engineering/schemas/execution/v1/execution_grant.json"
 _SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
 _SHA256_REF_RE = re.compile(r"^sha256:[a-f0-9]{64}$")
 
 PolicyValidator = Callable[[object], None]
 PolicyHasher = Callable[[object], str]
+GrantValidator = Callable[[object], None]
+GrantIdDeriver = Callable[[object], str]
 
 
 class SandboxAdmissionError(ValueError):
-    """Raised when routed work cannot be safely admitted to an execution sandbox."""
+    """Raised when routed work cannot be safely admitted to execution."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +51,13 @@ class ApprovalGrant:
     approval_id: str
     approver_ids: tuple[str, ...]
     evidence_refs: tuple[str, ...]
+
+    def normalized(self) -> "ApprovalGrant":
+        return ApprovalGrant(
+            approval_id=self.approval_id,
+            approver_ids=tuple(sorted(self.approver_ids)),
+            evidence_refs=tuple(sorted(self.evidence_refs)),
+        )
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -101,14 +111,45 @@ class ExecutionRequest:
 
 
 @dataclass(frozen=True, slots=True)
-class SandboxGrant:
-    schema_version: str
-    grant_id: str
+class ExecutionAuthority:
     dispatch_id: str
-    task_id: str
-    agent_id: str
+    plan_admission_id: str
+    candidate_sha256: str
+    registry_sha256: str
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "dispatch_id": self.dispatch_id,
+            "plan_admission_id": self.plan_admission_id,
+            "candidate_sha256": self.candidate_sha256,
+            "registry_sha256": self.registry_sha256,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class PolicyRefBinding:
     policy_id: str
     policy_sha256: str
+    jurisdiction: str
+    constraints: tuple[str, ...]
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "policy_id": self.policy_id,
+            "policy_sha256": self.policy_sha256,
+            "jurisdiction": self.jurisdiction,
+            "constraints": list(self.constraints),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionGrant:
+    schema_version: str
+    grant_id: str
+    authority: ExecutionAuthority
+    task_id: str
+    agent_id: str
+    policy_ref: PolicyRefBinding
     request_sha256: str
     repo: str | None
     read_paths: tuple[str, ...]
@@ -120,18 +161,17 @@ class SandboxGrant:
     network_ports: tuple[int, ...]
     environment_keys: tuple[str, ...]
     resources: ResourceRequest
-    approval_evidence_refs: tuple[str, ...]
-    constraint_evidence_refs: tuple[str, ...]
+    approvals: tuple[ApprovalGrant, ...]
+    constraint_evidence: tuple[ConstraintGrant, ...]
 
     def as_dict(self) -> dict[str, object]:
         return {
             "schema_version": self.schema_version,
             "grant_id": self.grant_id,
-            "dispatch_id": self.dispatch_id,
+            "authority": self.authority.as_dict(),
             "task_id": self.task_id,
             "agent_id": self.agent_id,
-            "policy_id": self.policy_id,
-            "policy_sha256": self.policy_sha256,
+            "policy_ref": self.policy_ref.as_dict(),
             "request_sha256": self.request_sha256,
             "repo": self.repo,
             "read_paths": list(self.read_paths),
@@ -143,8 +183,8 @@ class SandboxGrant:
             "network_ports": list(self.network_ports),
             "environment_keys": list(self.environment_keys),
             "resources": self.resources.as_dict(),
-            "approval_evidence_refs": list(self.approval_evidence_refs),
-            "constraint_evidence_refs": list(self.constraint_evidence_refs),
+            "approvals": [item.as_dict() for item in self.approvals],
+            "constraint_evidence": [item.as_dict() for item in self.constraint_evidence],
         }
 
 
@@ -156,7 +196,7 @@ class SandboxAdmission:
     plan_admission_id: str
     candidate_sha256: str
     registry_sha256: str
-    grants: tuple[SandboxGrant, ...]
+    grants: tuple[ExecutionGrant, ...]
     dispatch: DispatchPlan
 
     def as_dict(self) -> dict[str, object]:
@@ -229,8 +269,13 @@ def _validate_request_shape(request: ExecutionRequest) -> None:
         raise SandboxAdmissionError("execution request task_id must not be empty")
     if request.max_file_bytes <= 0:
         raise SandboxAdmissionError("execution request max_file_bytes must be positive")
-    _unique_paths(request.read_paths, field=f"{request.task_id}.read_paths")
-    _unique_paths(request.write_paths, field=f"{request.task_id}.write_paths")
+    reads = _unique_paths(request.read_paths, field=f"{request.task_id}.read_paths")
+    writes = _unique_paths(request.write_paths, field=f"{request.task_id}.write_paths")
+    for write_path in writes:
+        if not _path_covered(write_path, reads):
+            raise SandboxAdmissionError(
+                f"task {request.task_id} write path is not covered by requested read scope"
+            )
 
     for values, field in (
         (request.tool_ids, "tool_ids"),
@@ -251,17 +296,7 @@ def _validate_request_shape(request: ExecutionRequest) -> None:
             f"{request.task_id} network request must provide both hosts and ports"
         )
 
-    resources = request.resources
-    if any(
-        value <= 0
-        for value in (
-            resources.wall_time_seconds,
-            resources.cpu_time_seconds,
-            resources.memory_mb,
-            resources.max_processes,
-            resources.max_output_bytes,
-        )
-    ):
+    if any(value <= 0 for value in request.resources.as_dict().values()):
         raise SandboxAdmissionError(f"{request.task_id} resource requests must be positive")
 
     approval_ids = [item.approval_id for item in request.approvals]
@@ -285,42 +320,61 @@ def _validate_request_shape(request: ExecutionRequest) -> None:
             raise SandboxAdmissionError(f"{request.task_id} constraint grant is invalid")
 
 
-def _policy_runtime() -> tuple[PolicyValidator, PolicyHasher]:
+def _protocol_runtimes() -> tuple[
+    PolicyValidator,
+    PolicyHasher,
+    GrantValidator,
+    GrantIdDeriver,
+]:
     try:
-        module = importlib.import_module("agent_protocol.execution_policy")
+        policy_module = importlib.import_module("agent_protocol.execution_policy")
+        grant_module = importlib.import_module("agent_protocol.execution_grant")
     except ModuleNotFoundError as exc:
         raise SandboxAdmissionError(
-            "canonical agent-protocol Execution Policy validator is unavailable"
+            "canonical agent-protocol execution contracts are unavailable"
         ) from exc
 
-    schema_id = getattr(module, "EXECUTION_POLICY_ID", None)
-    validator = getattr(module, "validate_execution_policy", None)
-    hasher = getattr(module, "execution_policy_sha256", None)
-    if schema_id != _EXECUTION_POLICY_ID or not callable(validator) or not callable(hasher):
+    policy_validator = getattr(policy_module, "validate_execution_policy", None)
+    policy_hasher = getattr(policy_module, "execution_policy_sha256", None)
+    grant_validator = getattr(grant_module, "validate_execution_grant", None)
+    grant_deriver = getattr(grant_module, "derive_execution_grant_id", None)
+    if (
+        getattr(policy_module, "EXECUTION_POLICY_ID", None) != _EXECUTION_POLICY_ID
+        or getattr(grant_module, "EXECUTION_GRANT_ID", None) != _EXECUTION_GRANT_ID
+        or not callable(policy_validator)
+        or not callable(policy_hasher)
+        or not callable(grant_validator)
+        or not callable(grant_deriver)
+    ):
         raise SandboxAdmissionError(
-            "installed agent-protocol does not provide the required Execution Policy v1 contract"
+            "installed agent-protocol does not provide required execution contracts"
         )
-    return cast(PolicyValidator, validator), cast(PolicyHasher, hasher)
-
-
-def _policy_ref(
-    plan: Mapping[str, Any], task: Mapping[str, Any], task_id: str
-) -> Mapping[str, Any]:
-    raw = task.get("policy_ref", plan.get("policy_ref"))
-    return _require_mapping(raw, field=f"{task_id}.policy_ref")
+    return (
+        cast(PolicyValidator, policy_validator),
+        cast(PolicyHasher, policy_hasher),
+        cast(GrantValidator, grant_validator),
+        cast(GrantIdDeriver, grant_deriver),
+    )
 
 
 def _task_map(plan: object) -> tuple[Mapping[str, Any], dict[str, Mapping[str, Any]]]:
     plan_map = _require_mapping(plan, field="plan")
-    raw_tasks = _require_sequence(plan_map.get("tasks"), field="plan.tasks")
     tasks: dict[str, Mapping[str, Any]] = {}
-    for raw in raw_tasks:
+    for raw in _require_sequence(plan_map.get("tasks"), field="plan.tasks"):
         task = _require_mapping(raw, field="plan.tasks[]")
         task_id = _require_string(task.get("task_id"), field="task.task_id")
         if task_id in tasks:
             raise SandboxAdmissionError(f"duplicate task_id: {task_id}")
         tasks[task_id] = task
     return plan_map, tasks
+
+
+def _policy_ref(
+    plan: Mapping[str, Any], task: Mapping[str, Any], task_id: str
+) -> Mapping[str, Any]:
+    return _require_mapping(
+        task.get("policy_ref", plan.get("policy_ref")), field=f"{task_id}.policy_ref"
+    )
 
 
 def _policy_for_assignment(
@@ -331,20 +385,38 @@ def _policy_for_assignment(
     policies: Mapping[str, object],
     validator: PolicyValidator,
     hasher: PolicyHasher,
-) -> tuple[str, str, Mapping[str, Any], tuple[str, ...]]:
+) -> tuple[PolicyRefBinding, Mapping[str, Any]]:
     ref = _policy_ref(plan, task, assignment.task_id)
     policy_id = _require_string(ref.get("policy_id"), field=f"{assignment.task_id}.policy_id")
     policy_sha256 = _require_string(
         ref.get("policy_sha256"), field=f"{assignment.task_id}.policy_sha256"
     )
+    jurisdiction = _require_string(
+        ref.get("jurisdiction"), field=f"{assignment.task_id}.jurisdiction"
+    )
     if _SHA256_RE.fullmatch(policy_sha256) is None:
         raise SandboxAdmissionError(f"task {assignment.task_id} policy_sha256 is invalid")
+
+    raw_constraints = ref.get("constraints")
+    constraints: tuple[str, ...]
+    if raw_constraints is None:
+        constraints = ()
+    else:
+        values = _require_sequence(raw_constraints, field=f"{assignment.task_id}.constraints")
+        constraints = tuple(
+            sorted(
+                _require_string(value, field=f"{assignment.task_id}.constraints[]")
+                for value in values
+            )
+        )
+        if len(constraints) != len(set(constraints)):
+            raise SandboxAdmissionError(f"task {assignment.task_id} contains duplicate constraints")
+
     if policy_id not in policies:
         raise SandboxAdmissionError(
             f"task {assignment.task_id} execution policy is unavailable: {policy_id}"
         )
     policy = _require_mapping(policies[policy_id], field=f"policy[{policy_id}]")
-
     try:
         validator(policy)
         actual_hash = hasher(policy)
@@ -360,20 +432,15 @@ def _policy_for_assignment(
         raise SandboxAdmissionError(
             f"task {assignment.task_id} execution policy_id does not match policy_ref"
         )
-
-    raw_constraints = ref.get("constraints")
-    if raw_constraints is None:
-        return policy_id, policy_sha256, policy, ()
-    values = _require_sequence(raw_constraints, field=f"{assignment.task_id}.constraints")
-    constraints = tuple(
-        sorted(
-            _require_string(value, field=f"{assignment.task_id}.constraints[]")
-            for value in values
-        )
+    return (
+        PolicyRefBinding(
+            policy_id=policy_id,
+            policy_sha256=policy_sha256,
+            jurisdiction=jurisdiction,
+            constraints=constraints,
+        ),
+        policy,
     )
-    if len(constraints) != len(set(constraints)):
-        raise SandboxAdmissionError(f"task {assignment.task_id} contains duplicate constraints")
-    return policy_id, policy_sha256, policy, constraints
 
 
 def _target_scope(
@@ -405,14 +472,14 @@ def _target_scope(
                 f"task {request.task_id} target has no path_scope; filesystem execution is denied"
             )
         return ()
-
-    values = _require_sequence(raw_scope, field=f"{request.task_id}.target.path_scope")
     roots = tuple(
         _normalize_path(
             _require_string(value, field=f"{request.task_id}.target.path_scope[]"),
             field=f"{request.task_id}.target.path_scope",
         )
-        for value in values
+        for value in _require_sequence(
+            raw_scope, field=f"{request.task_id}.target.path_scope"
+        )
     )
     if len(roots) != len(set(roots)):
         raise SandboxAdmissionError(f"task {request.task_id} target path_scope contains duplicates")
@@ -430,13 +497,12 @@ def _policy_roots(
     filesystem = _require_mapping(
         sandbox.get("filesystem"), field=f"{task_id}.policy.sandbox.filesystem"
     )
-    values = _require_sequence(filesystem.get(key), field=f"{task_id}.policy.{key}")
     roots = tuple(
         _normalize_path(
             _require_string(value, field=f"{task_id}.policy.{key}[]"),
             field=f"{task_id}.policy.{key}",
         )
-        for value in values
+        for value in _require_sequence(filesystem.get(key), field=f"{task_id}.policy.{key}")
     )
     if len(roots) != len(set(roots)):
         raise SandboxAdmissionError(f"task {task_id} policy {key} contains duplicates")
@@ -446,25 +512,29 @@ def _policy_roots(
 def _admit_request(
     *,
     dispatch: DispatchPlan,
+    plan_admission: PlanAdmission,
+    registry: CapabilityRegistry,
     assignment: TaskAssignment,
     task: Mapping[str, Any],
     plan: Mapping[str, Any],
     request: ExecutionRequest,
     policies: Mapping[str, object],
-    validator: PolicyValidator,
-    hasher: PolicyHasher,
-) -> SandboxGrant:
+    policy_validator: PolicyValidator,
+    policy_hasher: PolicyHasher,
+    grant_validator: GrantValidator,
+    grant_deriver: GrantIdDeriver,
+) -> ExecutionGrant:
     _validate_request_shape(request)
     if request.task_id != assignment.task_id:
         raise SandboxAdmissionError("execution request task_id does not match assignment")
 
-    policy_id, policy_sha256, policy, constraints = _policy_for_assignment(
+    policy_ref, policy = _policy_for_assignment(
         plan=plan,
         task=task,
         assignment=assignment,
         policies=policies,
-        validator=validator,
-        hasher=hasher,
+        validator=policy_validator,
+        hasher=policy_hasher,
     )
     target_roots = _target_scope(task, request)
     requested_reads = _unique_paths(request.read_paths, field=f"{request.task_id}.read_paths")
@@ -483,9 +553,11 @@ def _admit_request(
         if not _path_covered(path, target_roots):
             raise SandboxAdmissionError(f"task {request.task_id} write path exceeds task target scope")
 
-    sandbox = _require_mapping(policy.get("sandbox"), field=f"{request.task_id}.policy.sandbox")
+    policy_sandbox = _require_mapping(
+        policy.get("sandbox"), field=f"{request.task_id}.policy.sandbox"
+    )
     filesystem = _require_mapping(
-        sandbox.get("filesystem"), field=f"{request.task_id}.policy.filesystem"
+        policy_sandbox.get("filesystem"), field=f"{request.task_id}.policy.filesystem"
     )
     max_file_bytes = filesystem.get("max_file_bytes")
     if not isinstance(max_file_bytes, int) or isinstance(max_file_bytes, bool):
@@ -495,20 +567,22 @@ def _admit_request(
     if request.allow_delete and filesystem.get("allow_delete") is not True:
         raise SandboxAdmissionError(f"task {request.task_id} delete is denied by policy")
 
-    tools = _require_mapping(sandbox.get("tools"), field=f"{request.task_id}.policy.tools")
-    allowed_tool_ids = {
+    tools = _require_mapping(policy_sandbox.get("tools"), field=f"{request.task_id}.policy.tools")
+    allowed_tools = {
         _require_string(item, field=f"{request.task_id}.policy.allowed_tool_ids[]")
         for item in _require_sequence(
             tools.get("allowed_tool_ids"), field=f"{request.task_id}.policy.allowed_tool_ids"
         )
     }
-    denied_tools = sorted(set(request.tool_ids) - allowed_tool_ids)
+    denied_tools = sorted(set(request.tool_ids) - allowed_tools)
     if denied_tools:
         raise SandboxAdmissionError(
             f"task {request.task_id} requests tools denied by policy: {', '.join(denied_tools)}"
         )
 
-    network = _require_mapping(sandbox.get("network"), field=f"{request.task_id}.policy.network")
+    network = _require_mapping(
+        policy_sandbox.get("network"), field=f"{request.task_id}.policy.network"
+    )
     mode = _require_string(network.get("mode"), field=f"{request.task_id}.policy.network.mode")
     allowed_hosts = {
         _require_string(item, field=f"{request.task_id}.policy.allowed_hosts[]")
@@ -532,7 +606,7 @@ def _admit_request(
         raise SandboxAdmissionError(f"task {request.task_id} network request exceeds allowlist")
 
     environment = _require_mapping(
-        sandbox.get("environment"), field=f"{request.task_id}.policy.environment"
+        policy_sandbox.get("environment"), field=f"{request.task_id}.policy.environment"
     )
     allowed_keys = {
         _require_string(item, field=f"{request.task_id}.policy.allowed_keys[]")
@@ -551,7 +625,7 @@ def _admit_request(
         raise SandboxAdmissionError(f"task {request.task_id} environment request is denied by policy")
 
     resources = _require_mapping(
-        sandbox.get("resources"), field=f"{request.task_id}.policy.resources"
+        policy_sandbox.get("resources"), field=f"{request.task_id}.policy.resources"
     )
     for key, requested in request.resources.as_dict().items():
         allowed = resources.get(key)
@@ -560,9 +634,8 @@ def _admit_request(
                 f"task {request.task_id} resource request exceeds policy: {key}"
             )
 
-    raw_approvals = _require_sequence(policy.get("approvals"), field=f"{request.task_id}.approvals")
     required_approvals: dict[str, Mapping[str, Any]] = {}
-    for raw in raw_approvals:
+    for raw in _require_sequence(policy.get("approvals"), field=f"{request.task_id}.approvals"):
         approval = _require_mapping(raw, field=f"{request.task_id}.approvals[]")
         approval_id = _require_string(
             approval.get("approval_id"), field=f"{request.task_id}.approval_id"
@@ -573,7 +646,6 @@ def _admit_request(
         raise SandboxAdmissionError(
             f"task {request.task_id} approval grants do not exactly match policy requirements"
         )
-    approval_evidence: list[str] = []
     for approval_id, requirement in required_approvals.items():
         grant = provided_approvals[approval_id]
         min_count = requirement.get("min_count")
@@ -583,47 +655,33 @@ def _admit_request(
             raise SandboxAdmissionError(f"task {request.task_id} approval count is insufficient")
         if requirement.get("evidence_required") is True and not grant.evidence_refs:
             raise SandboxAdmissionError(f"task {request.task_id} approval evidence is required")
-        approval_evidence.extend(grant.evidence_refs)
 
     provided_constraints = {item.constraint: item for item in request.constraints}
-    if set(provided_constraints) != set(constraints):
+    if set(provided_constraints) != set(policy_ref.constraints):
         raise SandboxAdmissionError(
             f"task {request.task_id} constraint evidence does not exactly match policy_ref"
         )
-    constraint_evidence = [
-        provided_constraints[constraint].evidence_ref for constraint in constraints
-    ]
 
-    request_sha256 = _sha256(request.as_dict())
-    material = {
-        "schema_version": "foundry.sandbox-grant.v1",
-        "dispatch_id": dispatch.dispatch_id,
-        "task_id": assignment.task_id,
-        "agent_id": assignment.agent_id,
-        "policy_id": policy_id,
-        "policy_sha256": policy_sha256,
-        "request_sha256": request_sha256,
-        "repo": request.repo,
-        "read_paths": sorted(request.read_paths),
-        "write_paths": sorted(request.write_paths),
-        "allow_delete": request.allow_delete,
-        "max_file_bytes": request.max_file_bytes,
-        "tool_ids": sorted(request.tool_ids),
-        "network_hosts": sorted(request.network_hosts),
-        "network_ports": sorted(request.network_ports),
-        "environment_keys": sorted(request.environment_keys),
-        "resources": request.resources.as_dict(),
-        "approval_evidence_refs": sorted(approval_evidence),
-        "constraint_evidence_refs": sorted(constraint_evidence),
-    }
-    return SandboxGrant(
-        schema_version="foundry.sandbox-grant.v1",
-        grant_id="sgr_" + _sha256(material)[:32],
+    normalized_approvals = tuple(
+        provided_approvals[key].normalized() for key in sorted(provided_approvals)
+    )
+    normalized_constraints = tuple(
+        provided_constraints[key] for key in sorted(provided_constraints)
+    )
+    authority = ExecutionAuthority(
         dispatch_id=dispatch.dispatch_id,
+        plan_admission_id=plan_admission.admission_id,
+        candidate_sha256=plan_admission.candidate_sha256,
+        registry_sha256=registry.registry_sha256,
+    )
+    request_sha256 = _sha256(request.as_dict())
+    provisional = ExecutionGrant(
+        schema_version="execution-grant.v1",
+        grant_id="sgr_" + "0" * 32,
+        authority=authority,
         task_id=assignment.task_id,
         agent_id=assignment.agent_id,
-        policy_id=policy_id,
-        policy_sha256=policy_sha256,
+        policy_ref=policy_ref,
         request_sha256=request_sha256,
         repo=request.repo,
         read_paths=tuple(sorted(request.read_paths)),
@@ -635,9 +693,38 @@ def _admit_request(
         network_ports=tuple(sorted(request.network_ports)),
         environment_keys=tuple(sorted(request.environment_keys)),
         resources=request.resources,
-        approval_evidence_refs=tuple(sorted(approval_evidence)),
-        constraint_evidence_refs=tuple(sorted(constraint_evidence)),
+        approvals=normalized_approvals,
+        constraint_evidence=normalized_constraints,
     )
+    grant_id = grant_deriver(provisional.as_dict())
+    grant = ExecutionGrant(
+        schema_version=provisional.schema_version,
+        grant_id=grant_id,
+        authority=provisional.authority,
+        task_id=provisional.task_id,
+        agent_id=provisional.agent_id,
+        policy_ref=provisional.policy_ref,
+        request_sha256=provisional.request_sha256,
+        repo=provisional.repo,
+        read_paths=provisional.read_paths,
+        write_paths=provisional.write_paths,
+        allow_delete=provisional.allow_delete,
+        max_file_bytes=provisional.max_file_bytes,
+        tool_ids=provisional.tool_ids,
+        network_hosts=provisional.network_hosts,
+        network_ports=provisional.network_ports,
+        environment_keys=provisional.environment_keys,
+        resources=provisional.resources,
+        approvals=provisional.approvals,
+        constraint_evidence=provisional.constraint_evidence,
+    )
+    try:
+        grant_validator(grant.as_dict())
+    except Exception as exc:
+        raise SandboxAdmissionError(
+            f"task {request.task_id} canonical Execution Grant validation failed"
+        ) from exc
+    return grant
 
 
 def admit_dispatch_to_sandbox(
@@ -651,7 +738,7 @@ def admit_dispatch_to_sandbox(
     failed: frozenset[str] = frozenset(),
     satisfied_preconditions: frozenset[str] = frozenset(),
 ) -> SandboxAdmission:
-    """Build dispatch and grant sandbox authority atomically for every ready task."""
+    """Build dispatch and canonical execution authority atomically for all ready tasks."""
     dispatch = build_dispatch_plan(
         plan,
         admission=admission,
@@ -661,7 +748,7 @@ def admit_dispatch_to_sandbox(
         satisfied_preconditions=satisfied_preconditions,
     )
     plan_map, tasks = _task_map(plan)
-    validator, hasher = _policy_runtime()
+    policy_validator, policy_hasher, grant_validator, grant_deriver = _protocol_runtimes()
 
     by_task: dict[str, ExecutionRequest] = {}
     for request in requests:
@@ -685,13 +772,17 @@ def admit_dispatch_to_sandbox(
     grants = tuple(
         _admit_request(
             dispatch=dispatch,
+            plan_admission=admission,
+            registry=registry,
             assignment=assignment,
             task=tasks[assignment.task_id],
             plan=plan_map,
             request=by_task[assignment.task_id],
             policies=policies,
-            validator=validator,
-            hasher=hasher,
+            policy_validator=policy_validator,
+            policy_hasher=policy_hasher,
+            grant_validator=grant_validator,
+            grant_deriver=grant_deriver,
         )
         for assignment in dispatch.assignments
     )
@@ -727,7 +818,7 @@ def verify_sandbox_admission(
     failed: frozenset[str] = frozenset(),
     satisfied_preconditions: frozenset[str] = frozenset(),
 ) -> None:
-    """Recompute the full authority decision and reject stale or tampered grants."""
+    """Recompute the complete authority decision and reject stale or tampered grants."""
     expected = admit_dispatch_to_sandbox(
         plan,
         admission=admission,
