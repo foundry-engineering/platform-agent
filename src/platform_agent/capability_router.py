@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 
 
@@ -34,12 +36,14 @@ class RouteDecision:
     agent_id: str
     required_capabilities: tuple[str, ...]
     matched_capabilities: tuple[str, ...]
+    registry_sha256: str
 
     def as_dict(self) -> dict[str, object]:
         return {
             "agent_id": self.agent_id,
             "required_capabilities": list(self.required_capabilities),
             "matched_capabilities": list(self.matched_capabilities),
+            "registry_sha256": self.registry_sha256,
         }
 
 
@@ -83,6 +87,7 @@ class CapabilityRegistry:
             agent_id: dict(sorted(capabilities.items()))
             for agent_id, capabilities in sorted(by_agent.items())
         }
+        self._registry_sha256 = self._fingerprint()
 
     @classmethod
     def from_apv1_payloads(
@@ -143,6 +148,26 @@ class CapabilityRegistry:
 
         return cls(tuple(records))
 
+    def _canonical_records(self) -> list[dict[str, str]]:
+        records: list[dict[str, str]] = []
+        for agent_id in sorted(self._by_agent):
+            for capability_id in sorted(self._by_agent[agent_id]):
+                records.append(self._by_agent[agent_id][capability_id].as_dict())
+        return records
+
+    def _fingerprint(self) -> str:
+        payload = json.dumps(
+            self._canonical_records(),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
+    @property
+    def registry_sha256(self) -> str:
+        return self._registry_sha256
+
     @property
     def agent_ids(self) -> tuple[str, ...]:
         return tuple(self._by_agent)
@@ -161,7 +186,7 @@ class CapabilityRegistry:
         required = tuple(sorted(set(required_capabilities)))
         if not required:
             raise CapabilityRoutingError(
-                "routing requires at least one required capability"
+                "capability-based routing requires at least one required capability"
             )
 
         candidates: list[str] = []
@@ -176,24 +201,31 @@ class CapabilityRegistry:
         *,
         preferred_owner: str | None = None,
     ) -> RouteDecision:
+        """Resolve a PlanGraph routing request deterministically.
+
+        PlanGraph v1 permits either an explicit owner or one-or-more required
+        capabilities. Therefore an explicit registered owner may be routed with
+        an empty capability set; capability-only routing still requires at least
+        one capability and exactly one eligible agent.
+        """
         required = tuple(sorted(set(required_capabilities)))
-        candidates = self.candidates(required)
 
         if preferred_owner is not None:
             if preferred_owner not in self._by_agent:
                 raise CapabilityRoutingError(
                     f"preferred owner is not registered: {preferred_owner}"
                 )
-            if preferred_owner not in candidates:
-                missing = sorted(
-                    set(required) - set(self._by_agent[preferred_owner])
-                )
+            missing = sorted(
+                set(required) - set(self._by_agent[preferred_owner])
+            )
+            if missing:
                 raise CapabilityRoutingError(
                     f"preferred owner {preferred_owner} lacks capabilities: "
                     + ", ".join(missing)
                 )
             selected = preferred_owner
         else:
+            candidates = self.candidates(required)
             if not candidates:
                 raise CapabilityRoutingError(
                     "no agent satisfies required capabilities: "
@@ -210,4 +242,5 @@ class CapabilityRegistry:
             agent_id=selected,
             required_capabilities=required,
             matched_capabilities=required,
+            registry_sha256=self.registry_sha256,
         )
