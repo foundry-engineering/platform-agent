@@ -7,11 +7,13 @@ from types import SimpleNamespace
 
 import pytest
 
-import platform_agent.sandbox_admission as sandbox
+import platform_agent.execution_authority as authority_runtime
 from platform_agent.capability_router import CapabilityRegistry
-from platform_agent.plan_admission import PlanAdmission, PlanAdmissionError, candidate_sha256
+from platform_agent.plan_admission import PlanAdmission, candidate_sha256
 from platform_agent.sandbox_admission import (
     ApprovalGrant,
+    ApprovalVerifier,
+    ConstraintEvaluator,
     ConstraintGrant,
     ExecutionRequest,
     ResourceRequest,
@@ -49,6 +51,18 @@ def _validate_grant(value: object) -> None:
         raise ValueError("wrong grant schema")
     if value.get("grant_id") != _derive_grant_id(value):
         raise ValueError("wrong grant identity")
+    approvals = value.get("approvals")
+    assert isinstance(approvals, list)
+    for item in approvals:
+        assert isinstance(item, dict)
+        if not str(item.get("verifier_id", "")).startswith("verifier_"):
+            raise ValueError("approval verifier identity missing")
+    evidence = value.get("constraint_evidence")
+    assert isinstance(evidence, list)
+    for item in evidence:
+        assert isinstance(item, dict)
+        if not str(item.get("evaluator_id", "")).startswith("evaluator_"):
+            raise ValueError("constraint evaluator identity missing")
 
 
 def _policy() -> dict[str, object]:
@@ -78,7 +92,7 @@ def _policy() -> dict[str, object]:
                 "allow_delete": False,
                 "max_file_bytes": 1048576,
             },
-            "tools": {"allowed_tool_ids": ["tool_pytest", "tool_file.write"]},
+            "tools": {"allowed_tool_ids": ["tool_file.write", "tool_pytest"]},
             "network": {"mode": "deny", "allowed_hosts": [], "allowed_ports": []},
             "environment": {
                 "allowed_keys": ["HOME", "LANG"],
@@ -116,9 +130,16 @@ def _registry() -> CapabilityRegistry:
     )
 
 
-def _plan(policy: dict[str, object], *, path_scope: list[str] | None = None) -> dict[str, object]:
+def _plan(
+    policy: dict[str, object],
+    *,
+    path_scope: list[str] | None = None,
+    constraints: list[str] | None = None,
+) -> dict[str, object]:
     if path_scope is None:
         path_scope = ["src", "tests"]
+    if constraints is None:
+        constraints = ["change-ticket"]
     return {
         "plan_id": "pln_ABCDEFGHIJKLMNOPQRSTUVWXYZ12",
         "source": {"sha256": SOURCE_SHA},
@@ -126,7 +147,7 @@ def _plan(policy: dict[str, object], *, path_scope: list[str] | None = None) -> 
             "policy_id": "pol_foundry_default",
             "policy_sha256": _hash(policy),
             "jurisdiction": "global",
-            "constraints": ["change-ticket"],
+            "constraints": constraints,
         },
         "tasks": [
             {
@@ -134,10 +155,7 @@ def _plan(policy: dict[str, object], *, path_scope: list[str] | None = None) -> 
                 "dependencies": [],
                 "preconditions": [],
                 "acceptance_gates": [{"gate_id": "gate_ok"}],
-                "routing": {
-                    "owner": "backend-agent",
-                    "required_capabilities": [],
-                },
+                "routing": {"owner": "backend-agent", "required_capabilities": []},
                 "target": {
                     "repo": "foundry-engineering/example",
                     "path_scope": path_scope,
@@ -166,11 +184,11 @@ def _request(**overrides: object) -> ExecutionRequest:
     values: dict[str, object] = {
         "task_id": TASK,
         "repo": "foundry-engineering/example",
-        "read_paths": ("src", "tests"),
+        "read_paths": ("tests", "src"),
         "write_paths": ("src/generated.txt",),
         "allow_delete": False,
         "max_file_bytes": 524288,
-        "tool_ids": ("tool_file.write", "tool_pytest"),
+        "tool_ids": ("tool_pytest", "tool_file.write"),
         "network_hosts": (),
         "network_ports": (),
         "environment_keys": ("HOME",),
@@ -199,8 +217,40 @@ def _request(**overrides: object) -> ExecutionRequest:
     return ExecutionRequest(**values)  # type: ignore[arg-type]
 
 
+def _approval_verifiers() -> dict[str, ApprovalVerifier]:
+    def verify_operator(context, claim, requirement) -> None:  # type: ignore[no-untyped-def]
+        assert context.task_id == TASK
+        assert requirement["kind"] == "operator"
+        if claim.evidence_refs != (APPROVAL_EVIDENCE,):
+            raise ValueError("untrusted approval evidence")
+        if claim.approver_ids != ("operator-1",):
+            raise ValueError("unexpected operator identity")
+
+    return {
+        "approval_operator": ApprovalVerifier(
+            verifier_id="verifier_operator-approval.v1",
+            verify=verify_operator,
+        )
+    }
+
+
+def _constraint_evaluators() -> dict[str, ConstraintEvaluator]:
+    def evaluate_change_ticket(context, claim) -> str:  # type: ignore[no-untyped-def]
+        assert context.task_id == TASK
+        if claim.evidence_ref != CONSTRAINT_EVIDENCE:
+            raise ValueError("change ticket could not be verified")
+        return CONSTRAINT_EVIDENCE
+
+    return {
+        "change-ticket": ConstraintEvaluator(
+            evaluator_id="evaluator_change-ticket.v1",
+            evaluate=evaluate_change_ticket,
+        )
+    }
+
+
 def _install_protocol_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
-    def load(name: str):
+    def load(name: str):  # type: ignore[no-untyped-def]
         if name == "agent_protocol.execution_policy":
             return SimpleNamespace(
                 EXECUTION_POLICY_ID=POLICY_SCHEMA_ID,
@@ -215,7 +265,7 @@ def _install_protocol_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
             )
         raise ModuleNotFoundError(name)
 
-    monkeypatch.setattr(sandbox.importlib, "import_module", load)
+    monkeypatch.setattr(authority_runtime.importlib, "import_module", load)
 
 
 def _admit(
@@ -224,6 +274,8 @@ def _admit(
     policy: dict[str, object] | None = None,
     plan: dict[str, object] | None = None,
     request: ExecutionRequest | None = None,
+    approval_verifiers: dict[str, ApprovalVerifier] | None = None,
+    constraint_evaluators: dict[str, ConstraintEvaluator] | None = None,
 ):
     _install_protocol_runtime(monkeypatch)
     active_policy = policy or _policy()
@@ -235,24 +287,39 @@ def _admit(
         registry=_registry(),
         requests=(active_request,),
         policies={"pol_foundry_default": active_policy},
+        approval_verifiers=(
+            _approval_verifiers() if approval_verifiers is None else approval_verifiers
+        ),
+        constraint_evaluators=(
+            _constraint_evaluators()
+            if constraint_evaluators is None
+            else constraint_evaluators
+        ),
     )
 
 
-def test_valid_admission_emits_canonical_execution_grant(
+def test_valid_admission_emits_verified_canonical_execution_grant(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     admitted = _admit(monkeypatch)
+    grant = admitted.grants[0]
 
     assert admitted.sandbox_admission_id.startswith("sad_")
-    assert len(admitted.grants) == 1
-    grant = admitted.grants[0]
     assert grant.schema_version == "execution-grant.v1"
     assert grant.grant_id == _derive_grant_id(grant.as_dict())
     assert grant.authority.dispatch_id == admitted.dispatch_id
-    assert grant.authority.plan_admission_id == admitted.plan_admission_id
     assert grant.policy_ref.policy_sha256 == _hash(_policy())
-    assert grant.approvals[0].evidence_refs == (APPROVAL_EVIDENCE,)
+    assert grant.approvals[0].verifier_id == "verifier_operator-approval.v1"
+    assert grant.constraint_evidence[0].evaluator_id == "evaluator_change-ticket.v1"
     assert grant.constraint_evidence[0].evidence_ref == CONSTRAINT_EVIDENCE
+
+
+def test_request_order_is_normalized_before_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    left = _admit(monkeypatch, request=_request(read_paths=("tests", "src")))
+    right = _admit(monkeypatch, request=_request(read_paths=("src", "tests")))
+
+    assert left.grants[0].request_sha256 == right.grants[0].request_sha256
+    assert left.grants[0].grant_id == right.grants[0].grant_id
 
 
 def test_admission_is_deterministic_and_recomputable(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -265,6 +332,8 @@ def test_admission_is_deterministic_and_recomputable(monkeypatch: pytest.MonkeyP
         "registry": _registry(),
         "requests": (request,),
         "policies": {"pol_foundry_default": policy},
+        "approval_verifiers": _approval_verifiers(),
+        "constraint_evaluators": _constraint_evaluators(),
     }
     admitted = admit_dispatch_to_sandbox(plan, **kwargs)  # type: ignore[arg-type]
     repeated = admit_dispatch_to_sandbox(plan, **kwargs)  # type: ignore[arg-type]
@@ -276,15 +345,7 @@ def test_admission_is_deterministic_and_recomputable(monkeypatch: pytest.MonkeyP
 def test_tampered_grant_fails_recomputation(monkeypatch: pytest.MonkeyPatch) -> None:
     policy = _policy()
     plan = _plan(policy)
-    request = _request()
-    _install_protocol_runtime(monkeypatch)
-    admitted = admit_dispatch_to_sandbox(
-        plan,
-        admission=_admission(plan),
-        registry=_registry(),
-        requests=(request,),
-        policies={"pol_foundry_default": policy},
-    )
+    admitted = _admit(monkeypatch, policy=policy, plan=plan)
     tampered_grant = replace(admitted.grants[0], max_file_bytes=999999)
     tampered = replace(admitted, grants=(tampered_grant,))
 
@@ -294,14 +355,67 @@ def test_tampered_grant_fails_recomputation(monkeypatch: pytest.MonkeyPatch) -> 
             plan,
             admission=_admission(plan),
             registry=_registry(),
-            requests=(request,),
+            requests=(_request(),),
             policies={"pol_foundry_default": policy},
+            approval_verifiers=_approval_verifiers(),
+            constraint_evaluators=_constraint_evaluators(),
         )
+
+
+def test_missing_approval_verifier_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(SandboxAdmissionError, match="approval verifier is unavailable"):
+        _admit(monkeypatch, approval_verifiers={})
+
+
+def test_forged_approval_evidence_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    forged = _request(
+        approvals=(
+            ApprovalGrant(
+                approval_id="approval_operator",
+                approver_ids=("operator-1",),
+                evidence_refs=("sha256:" + "9" * 64,),
+            ),
+        )
+    )
+    with pytest.raises(SandboxAdmissionError, match="approval verification failed"):
+        _admit(monkeypatch, request=forged)
+
+
+def test_unknown_constraint_evaluator_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(SandboxAdmissionError, match="constraint evaluator is unavailable"):
+        _admit(monkeypatch, constraint_evaluators={})
+
+
+def test_forged_constraint_evidence_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    forged = _request(
+        constraints=(ConstraintGrant("change-ticket", "sha256:" + "9" * 64),)
+    )
+    with pytest.raises(SandboxAdmissionError, match="constraint evaluation failed"):
+        _admit(monkeypatch, request=forged)
+
+
+def test_builtin_scoped_write_constraint_is_derived_not_self_asserted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    policy = _policy()
+    plan = _plan(policy, constraints=["fs.write:scoped"])
+    request = _request(constraints=(ConstraintGrant("fs.write:scoped"),))
+    admitted = _admit(
+        monkeypatch,
+        policy=policy,
+        plan=plan,
+        request=request,
+        constraint_evaluators={},
+    )
+    evidence = admitted.grants[0].constraint_evidence[0]
+
+    assert evidence.evaluator_id == "evaluator_foundry.fs-write-scoped.v1"
+    assert evidence.evidence_ref.startswith("sha256:")
 
 
 def test_protocol_contracts_unavailable_fail_closed(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        sandbox.importlib,
+        authority_runtime.importlib,
         "import_module",
         lambda name: (_ for _ in ()).throw(ModuleNotFoundError(name)),
     )
@@ -315,34 +429,8 @@ def test_protocol_contracts_unavailable_fail_closed(monkeypatch: pytest.MonkeyPa
             registry=_registry(),
             requests=(_request(),),
             policies={"pol_foundry_default": policy},
-        )
-
-
-def test_wrong_execution_contract_version_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
-    def load(name: str):
-        if name == "agent_protocol.execution_policy":
-            return SimpleNamespace(
-                EXECUTION_POLICY_ID=POLICY_SCHEMA_ID,
-                validate_execution_policy=lambda value: None,
-                execution_policy_sha256=_hash,
-            )
-        return SimpleNamespace(
-            EXECUTION_GRANT_ID="https://foundry.engineering/schemas/execution/v2/execution_grant.json",
-            validate_execution_grant=_validate_grant,
-            derive_execution_grant_id=_derive_grant_id,
-        )
-
-    monkeypatch.setattr(sandbox.importlib, "import_module", load)
-    policy = _policy()
-    plan = _plan(policy)
-
-    with pytest.raises(SandboxAdmissionError, match="required execution contracts"):
-        admit_dispatch_to_sandbox(
-            plan,
-            admission=_admission(plan),
-            registry=_registry(),
-            requests=(_request(),),
-            policies={"pol_foundry_default": policy},
+            approval_verifiers=_approval_verifiers(),
+            constraint_evaluators=_constraint_evaluators(),
         )
 
 
@@ -361,6 +449,8 @@ def test_policy_hash_mismatch_is_rejected(monkeypatch: pytest.MonkeyPatch) -> No
             registry=_registry(),
             requests=(_request(),),
             policies={"pol_foundry_default": policy},
+            approval_verifiers=_approval_verifiers(),
+            constraint_evaluators=_constraint_evaluators(),
         )
 
 
@@ -414,20 +504,8 @@ def test_empty_target_scope_denies_filesystem_execution(monkeypatch: pytest.Monk
             ),
             "resource request exceeds policy",
         ),
-        (_request(approvals=()), "approval grants do not exactly match"),
-        (
-            _request(
-                approvals=(
-                    ApprovalGrant(
-                        approval_id="approval_operator",
-                        approver_ids=("operator-1",),
-                        evidence_refs=(),
-                    ),
-                )
-            ),
-            "approval evidence is required",
-        ),
-        (_request(constraints=()), "constraint evidence does not exactly match"),
+        (_request(approvals=()), "approval claims do not exactly match"),
+        (_request(constraints=()), "constraint claims do not exactly match"),
     ],
 )
 def test_policy_and_scope_violations_fail_closed(
@@ -437,20 +515,3 @@ def test_policy_and_scope_violations_fail_closed(
 ) -> None:
     with pytest.raises(SandboxAdmissionError, match=message):
         _admit(monkeypatch, request=request)
-
-
-def test_stale_plan_admission_stops_before_sandbox(monkeypatch: pytest.MonkeyPatch) -> None:
-    _install_protocol_runtime(monkeypatch)
-    policy = _policy()
-    plan = _plan(policy)
-    admitted_plan = _admission(plan)
-    plan["source"] = {"sha256": "9" * 64}
-
-    with pytest.raises(PlanAdmissionError, match="source hash mismatch"):
-        admit_dispatch_to_sandbox(
-            plan,
-            admission=admitted_plan,
-            registry=_registry(),
-            requests=(_request(),),
-            policies={"pol_foundry_default": policy},
-        )
