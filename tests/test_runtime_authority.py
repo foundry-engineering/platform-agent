@@ -37,18 +37,33 @@ GRANT_TWO_ID = "sgr_" + "2" * 32
 TASK_ID = "tsk_" + "1" * 32
 TASK_TWO_ID = "tsk_" + "2" * 32
 BINDING_ID = "wsb_" + "c" * 32
-RESERVATION = RunReservation(
-    reservation_id="rsv_" + "d" * 32,
-    tenant_id=TENANT.tenant_id,
-    project_id=TENANT.project_id,
-    run_key=DISPATCH_ID,
-)
 NOW = datetime(2026, 9, 15, 20, 30, tzinfo=UTC)
 
 
 def _sha(value: object) -> str:
     raw = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _repo_hash(repositories: tuple[str, ...]) -> str:
+    return _sha(
+        {
+            "schema_version": "foundry.run-repository-set.v1",
+            "repository_ids": list(repositories),
+        }
+    )
+
+
+def _reservation(repositories: tuple[str, ...]) -> RunReservation:
+    canonical = tuple(sorted(repositories))
+    return RunReservation(
+        reservation_id="rsv_" + "d" * 32,
+        tenant_id=TENANT.tenant_id,
+        project_id=TENANT.project_id,
+        run_key=DISPATCH_ID,
+        repository_ids=canonical,
+        repository_set_sha256=_repo_hash(canonical),
+    )
 
 
 def _grant(
@@ -91,12 +106,13 @@ def _dispatch(task_ids: tuple[str, ...]):
 def _admission(
     grants: tuple[dict[str, object], ...] | None = None,
     *,
-    reservation: RunReservation = RESERVATION,
+    reservation: RunReservation | None = None,
 ):
     actual = grants or (_grant(),)
+    repositories = tuple(sorted({str(item["repo"]) for item in actual}))
     return SimpleNamespace(
         tenant_context=TENANT,
-        reservation=reservation,
+        reservation=reservation or _reservation(repositories),
         signed_grants=actual,
         dispatch=_dispatch(tuple(str(item["task_id"]) for item in actual)),
     )
@@ -140,7 +156,6 @@ class FakeState:
         return _snapshot(repository_id, self.contexts[repository_id])
 
     def reservation_is_active(self, reservation: RunReservation) -> bool:
-        assert reservation == RESERVATION or reservation.reservation_id == RESERVATION.reservation_id
         return self.reservation_active
 
 
@@ -201,7 +216,7 @@ def _issue(monkeypatch: pytest.MonkeyPatch, admission=None, *, state=None):
 def test_live_reserved_authority_issues_signed_witness(monkeypatch: pytest.MonkeyPatch) -> None:
     document = _issue(monkeypatch)
     assert document["witness_id"] == "taw_" + "f" * 32
-    assert document["reservation_id"] == RESERVATION.reservation_id
+    assert document["reservation_id"] == "rsv_" + "d" * 32
     assert document["execution_grant_id"] == GRANT_ID
 
 
@@ -212,6 +227,28 @@ def test_all_repositories_in_admission_are_revalidated_before_witness(
     state = FakeState()
     _issue(monkeypatch, _admission((_grant(), second)), state=state)
     assert state.snapshots_requested == [REPO, REPO_TWO]
+
+
+def test_repository_set_reservation_must_exactly_match_admission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    second = _grant(grant_id=GRANT_TWO_ID, task_id=TASK_TWO_ID, repo=REPO_TWO)
+    admission = _admission((_grant(), second), reservation=_reservation((REPO,)))
+    with pytest.raises(RuntimeAuthorityError, match="repository set differs"):
+        _issue(monkeypatch, admission)
+
+
+def test_repository_set_hash_must_be_valid(monkeypatch: pytest.MonkeyPatch) -> None:
+    bad = RunReservation(
+        reservation_id="rsv_" + "d" * 32,
+        tenant_id=TENANT.tenant_id,
+        project_id=TENANT.project_id,
+        run_key=DISPATCH_ID,
+        repository_ids=(REPO,),
+        repository_set_sha256="0" * 64,
+    )
+    with pytest.raises(RuntimeAuthorityError, match="repository-set hash"):
+        _issue(monkeypatch, _admission(reservation=bad))
 
 
 def test_stale_second_repository_blocks_first_repository_witness(
@@ -232,10 +269,12 @@ def test_stale_second_repository_blocks_first_repository_witness(
 
 def test_reservation_must_be_bound_to_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
     wrong = RunReservation(
-        reservation_id=RESERVATION.reservation_id,
+        reservation_id="rsv_" + "d" * 32,
         tenant_id=TENANT.tenant_id,
         project_id=TENANT.project_id,
         run_key="dsp_" + "9" * 32,
+        repository_ids=(REPO,),
+        repository_set_sha256=_repo_hash((REPO,)),
     )
     with pytest.raises(RuntimeAuthorityError, match="not bound to the admitted dispatch"):
         _issue(monkeypatch, _admission(reservation=wrong))
