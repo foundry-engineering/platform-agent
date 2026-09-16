@@ -49,6 +49,10 @@ class GovernedSkillAdmissionService:
             keyset_id=str(tenant["keyset_id"]),
         )
 
+    def current_context(self, tenant_id: str, project_id: str) -> TenantContext:
+        """Return current live tenant/project context or fail closed if inactive."""
+        return self._current_context(tenant_id, project_id)
+
     def admit(
         self,
         *,
