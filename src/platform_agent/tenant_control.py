@@ -19,6 +19,18 @@ _PROJECT_STATUSES: Final = frozenset({"active", "suspended", "deleting", "delete
 _NAMESPACE_KINDS: Final = frozenset(
     {"policy", "artifact", "audit", "receipt", "workspace", "key-metadata"}
 )
+_TENANT_TRANSITIONS: Final = {
+    "active": frozenset({"suspended", "deleting"}),
+    "suspended": frozenset({"active", "deleting"}),
+    "deleting": frozenset(),
+    "deleted": frozenset(),
+}
+_PROJECT_TRANSITIONS: Final = {
+    "active": frozenset({"suspended", "deleting"}),
+    "suspended": frozenset({"active", "deleting"}),
+    "deleting": frozenset(),
+    "deleted": frozenset(),
+}
 
 
 class TenantControlError(RuntimeError):
@@ -116,6 +128,18 @@ class RunReservation:
     tenant_id: str
     project_id: str
     run_key: str
+    repository_ids: tuple[str, ...] = ()
+    repository_set_sha256: str = ""
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "reservation_id": self.reservation_id,
+            "tenant_id": self.tenant_id,
+            "project_id": self.project_id,
+            "run_key": self.run_key,
+            "repository_ids": list(self.repository_ids),
+            "repository_set_sha256": self.repository_set_sha256,
+        }
 
 
 def _utc_now() -> str:
@@ -128,6 +152,15 @@ def _canonical_json(value: object) -> str:
 
 def _sha256(value: object) -> str:
     return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def _repository_set_sha256(repository_ids: tuple[str, ...]) -> str:
+    return _sha256(
+        {
+            "schema_version": "foundry.run-repository-set.v1",
+            "repository_ids": list(repository_ids),
+        }
+    )
 
 
 def _reject_symlink_path(path: Path) -> Path:
@@ -144,6 +177,14 @@ def _require_identifier(value: str, *, prefix: str, field: str) -> str:
     if any(ch not in "abcdefghijklmnopqrstuvwxyz0123456789_-" for ch in value[len(prefix) :]):
         raise ValueError(f"{field} contains unsupported characters")
     return value
+
+
+def _require_reason(reason: str) -> str:
+    if not isinstance(reason, str) or not reason.strip():
+        raise ValueError("authority mutation reason is required")
+    if len(reason.strip()) > 2048:
+        raise ValueError("authority mutation reason is too long")
+    return reason.strip()
 
 
 def _require_keyset_id(value: str) -> str:
@@ -164,8 +205,25 @@ def _require_repository_id(value: str) -> str:
     return value
 
 
+def _canonical_repository_set(values: tuple[str, ...] | list[str]) -> tuple[str, ...]:
+    validated = tuple(_require_repository_id(value) for value in values)
+    if not validated:
+        raise ValueError("run reservation requires at least one repository")
+    canonical = tuple(sorted(set(validated)))
+    if len(canonical) != len(validated):
+        raise ValueError("run reservation repository set contains duplicates")
+    if len(canonical) > 256:
+        raise ValueError("run reservation repository set is too large")
+    return canonical
+
+
 class SQLiteTenantControlStore:
-    """Persistent, transactional tenant control plane for single-node/on-prem Foundry."""
+    """Transactional tenant authority store for single-node/on-prem Foundry.
+
+    The store owns lifecycle state, revocation epochs, quotas, repository bindings,
+    short-lived run reservations and the tamper-evident authority event chain.
+    Run reservations commit to the complete repository set of a dispatch.
+    """
 
     def __init__(self, path: Path) -> None:
         self.path = _reject_symlink_path(path)
@@ -218,6 +276,8 @@ class SQLiteTenantControlStore:
                     tenant_id TEXT NOT NULL REFERENCES tenants(tenant_id) ON DELETE CASCADE,
                     project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
                     run_key TEXT NOT NULL,
+                    repository_ids_json TEXT NOT NULL DEFAULT '[]',
+                    repository_set_sha256 TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL,
                     UNIQUE (tenant_id, run_key)
                 );
@@ -240,6 +300,22 @@ class SQLiteTenantControlStore:
                 CREATE INDEX IF NOT EXISTS idx_authority_events_tenant ON authority_events(tenant_id, sequence);
                 """
             )
+            columns = {
+                str(row[1]) for row in db.execute("PRAGMA table_info(run_reservations)").fetchall()
+            }
+            if "repository_ids_json" not in columns:
+                db.execute(
+                    "ALTER TABLE run_reservations ADD COLUMN repository_ids_json TEXT NOT NULL DEFAULT '[]'"
+                )
+            if "repository_set_sha256" not in columns:
+                db.execute(
+                    "ALTER TABLE run_reservations ADD COLUMN repository_set_sha256 TEXT NOT NULL DEFAULT ''"
+                )
+            # Reservations are ephemeral authority. Legacy rows without repository-set
+            # commitment are revoked rather than silently upgraded with guessed scope.
+            db.execute(
+                "DELETE FROM run_reservations WHERE repository_set_sha256='' OR repository_ids_json='[]'"
+            )
 
     def _append_event(
         self,
@@ -252,8 +328,7 @@ class SQLiteTenantControlStore:
         old_epoch: int,
         new_epoch: int,
     ) -> str:
-        if not reason.strip():
-            raise ValueError("authority event reason is required")
+        reason = _require_reason(reason)
         previous = db.execute(
             "SELECT event_sha256 FROM authority_events WHERE tenant_id=? ORDER BY sequence DESC LIMIT 1",
             (tenant_id,),
@@ -265,7 +340,7 @@ class SQLiteTenantControlStore:
             "tenant_id": tenant_id,
             "project_id": project_id,
             "kind": kind,
-            "reason": reason.strip(),
+            "reason": reason,
             "old_epoch": old_epoch,
             "new_epoch": new_epoch,
             "occurred_at": occurred_at,
@@ -280,7 +355,7 @@ class SQLiteTenantControlStore:
                 tenant_id,
                 project_id,
                 kind,
-                reason.strip(),
+                reason,
                 old_epoch,
                 new_epoch,
                 occurred_at,
@@ -295,7 +370,10 @@ class SQLiteTenantControlStore:
         raw = json.loads(str(row["quotas_json"]))
         if not isinstance(raw, dict):
             raise TenantControlError("stored quota policy is invalid")
-        return TenantQuotaLimits(**raw)
+        try:
+            return TenantQuotaLimits(**raw)
+        except (TypeError, ValueError) as exc:
+            raise TenantControlError("stored quota policy is invalid") from exc
 
     def create_tenant(
         self,
@@ -441,6 +519,7 @@ class SQLiteTenantControlStore:
         reason: str,
     ) -> int:
         repository_id = _require_repository_id(repository_id)
+        reason = _require_reason(reason)
         with closing(self._connect()) as db:
             db.execute("BEGIN IMMEDIATE")
             try:
@@ -542,17 +621,18 @@ class SQLiteTenantControlStore:
             snapshot_sha256=_sha256(material),
         )
 
-    def reserve_run(
+    def reserve_dispatch(
         self,
         tenant_id: str,
         project_id: str,
-        repository_id: str,
+        repository_ids: tuple[str, ...] | list[str],
         *,
         run_key: str,
     ) -> RunReservation:
         if not run_key or len(run_key) > 256:
             raise ValueError("run_key must be a non-empty bounded string")
-        repository_id = _require_repository_id(repository_id)
+        repositories = _canonical_repository_set(repository_ids)
+        repository_hash = _repository_set_sha256(repositories)
         reservation_id = "rsv_" + secrets.token_hex(16)
         with closing(self._connect()) as db:
             db.execute("BEGIN IMMEDIATE")
@@ -563,17 +643,17 @@ class SQLiteTenantControlStore:
                 project = db.execute(
                     "SELECT status,tenant_id FROM projects WHERE project_id=?", (project_id,)
                 ).fetchone()
-                repo = db.execute(
-                    "SELECT 1 FROM repositories WHERE tenant_id=? AND project_id=? AND repository_id=?",
-                    (tenant_id, project_id, repository_id),
-                ).fetchone()
-                if (
-                    tenant is None
-                    or project is None
-                    or str(project["tenant_id"]) != tenant_id
-                    or repo is None
-                ):
-                    raise TenantControlError("unknown tenant/project/repository binding")
+                bound = {
+                    str(row[0])
+                    for row in db.execute(
+                        "SELECT repository_id FROM repositories WHERE tenant_id=? AND project_id=?",
+                        (tenant_id, project_id),
+                    ).fetchall()
+                }
+                if tenant is None or project is None or str(project["tenant_id"]) != tenant_id:
+                    raise TenantControlError("unknown tenant/project binding")
+                if set(repositories) - bound:
+                    raise TenantControlError("run reservation includes repository outside tenant project")
                 if tenant["status"] != "active" or project["status"] != "active":
                     raise TenantNotActiveError("tenant/project is not active")
                 limits = self._limits(tenant)
@@ -586,8 +666,16 @@ class SQLiteTenantControlStore:
                     raise TenantQuotaError("tenant active-run quota exceeded")
                 try:
                     db.execute(
-                        "INSERT INTO run_reservations (reservation_id,tenant_id,project_id,run_key,created_at) VALUES (?,?,?,?,?)",
-                        (reservation_id, tenant_id, project_id, run_key, _utc_now()),
+                        "INSERT INTO run_reservations (reservation_id,tenant_id,project_id,run_key,repository_ids_json,repository_set_sha256,created_at) VALUES (?,?,?,?,?,?,?)",
+                        (
+                            reservation_id,
+                            tenant_id,
+                            project_id,
+                            run_key,
+                            _canonical_json(list(repositories)),
+                            repository_hash,
+                            _utc_now(),
+                        ),
                     )
                 except sqlite3.IntegrityError as exc:
                     raise TenantControlError("run_key already reserved for tenant") from exc
@@ -595,7 +683,58 @@ class SQLiteTenantControlStore:
             except Exception:
                 db.rollback()
                 raise
-        return RunReservation(reservation_id, tenant_id, project_id, run_key)
+        return RunReservation(
+            reservation_id=reservation_id,
+            tenant_id=tenant_id,
+            project_id=project_id,
+            run_key=run_key,
+            repository_ids=repositories,
+            repository_set_sha256=repository_hash,
+        )
+
+    def reserve_run(
+        self,
+        tenant_id: str,
+        project_id: str,
+        repository_id: str,
+        *,
+        run_key: str,
+    ) -> RunReservation:
+        """Compatibility wrapper for one-repository runs."""
+        return self.reserve_dispatch(
+            tenant_id,
+            project_id,
+            (repository_id,),
+            run_key=run_key,
+        )
+
+    def reservation_is_active(self, reservation: RunReservation) -> bool:
+        with closing(self._connect()) as db:
+            row = db.execute(
+                "SELECT tenant_id,project_id,run_key,repository_ids_json,repository_set_sha256 FROM run_reservations WHERE reservation_id=?",
+                (reservation.reservation_id,),
+            ).fetchone()
+        if row is None:
+            return False
+        try:
+            stored_list = json.loads(str(row["repository_ids_json"]))
+        except json.JSONDecodeError:
+            return False
+        if not isinstance(stored_list, list) or not all(isinstance(item, str) for item in stored_list):
+            return False
+        stored_repositories = tuple(stored_list)
+        stored_hash = str(row["repository_set_sha256"])
+        if stored_hash != _repository_set_sha256(stored_repositories):
+            return False
+        if reservation.repository_ids and reservation.repository_ids != stored_repositories:
+            return False
+        if reservation.repository_set_sha256 and reservation.repository_set_sha256 != stored_hash:
+            return False
+        return (
+            str(row["tenant_id"]),
+            str(row["project_id"]),
+            str(row["run_key"]),
+        ) == (reservation.tenant_id, reservation.project_id, reservation.run_key)
 
     def release_run(self, reservation_id: str) -> None:
         if not reservation_id.startswith("rsv_"):
@@ -690,6 +829,7 @@ class SQLiteTenantControlStore:
         return old_epoch, new_epoch
 
     def bump_authority_epoch(self, tenant_id: str, *, reason: str) -> int:
+        reason = _require_reason(reason)
         with closing(self._connect()) as db:
             db.execute("BEGIN IMMEDIATE")
             try:
@@ -709,6 +849,7 @@ class SQLiteTenantControlStore:
 
     def rotate_keyset(self, tenant_id: str, *, keyset_id: str, reason: str) -> int:
         keyset_id = _require_keyset_id(keyset_id)
+        reason = _require_reason(reason)
         with closing(self._connect()) as db:
             db.execute("BEGIN IMMEDIATE")
             try:
@@ -730,6 +871,30 @@ class SQLiteTenantControlStore:
                 db.rollback()
                 raise
 
+    def _quota_usage_for_update(self, db: sqlite3.Connection, tenant_id: str) -> tuple[int, int, int, int]:
+        projects = int(
+            db.execute(
+                "SELECT COUNT(*) FROM projects WHERE tenant_id=? AND status != 'deleted'", (tenant_id,)
+            ).fetchone()[0]
+        )
+        max_repositories = int(
+            db.execute(
+                "SELECT COALESCE(MAX(repo_count),0) FROM (SELECT COUNT(*) AS repo_count FROM repositories WHERE tenant_id=? GROUP BY project_id)",
+                (tenant_id,),
+            ).fetchone()[0]
+        )
+        active_runs = int(
+            db.execute(
+                "SELECT COUNT(*) FROM run_reservations WHERE tenant_id=?", (tenant_id,)
+            ).fetchone()[0]
+        )
+        tenant = db.execute(
+            "SELECT artifact_bytes FROM tenants WHERE tenant_id=?", (tenant_id,)
+        ).fetchone()
+        if tenant is None:
+            raise TenantControlError("unknown tenant")
+        return projects, max_repositories, active_runs, int(tenant["artifact_bytes"])
+
     def update_quotas(
         self,
         tenant_id: str,
@@ -737,9 +902,21 @@ class SQLiteTenantControlStore:
         *,
         reason: str,
     ) -> int:
+        reason = _require_reason(reason)
         with closing(self._connect()) as db:
             db.execute("BEGIN IMMEDIATE")
             try:
+                projects, max_repositories, active_runs, artifact_bytes = self._quota_usage_for_update(
+                    db, tenant_id
+                )
+                if projects > quotas.max_projects:
+                    raise TenantQuotaError("new project quota is below current project usage")
+                if max_repositories > quotas.max_repositories_per_project:
+                    raise TenantQuotaError("new repository quota is below current project usage")
+                if active_runs > quotas.max_active_runs:
+                    raise TenantQuotaError("new active-run quota is below current usage")
+                if artifact_bytes > quotas.max_artifact_bytes:
+                    raise TenantQuotaError("new artifact quota is below current storage usage")
                 _, epoch = self._mutate_epoch(
                     db,
                     tenant_id,
@@ -751,6 +928,9 @@ class SQLiteTenantControlStore:
                     "UPDATE tenants SET quotas_json=?,updated_at=? WHERE tenant_id=?",
                     (_canonical_json(quotas.as_dict()), _utc_now(), tenant_id),
                 )
+                # Any successful quota mutation rotates authority. Existing run
+                # reservations are therefore revoked rather than carrying stale limits.
+                db.execute("DELETE FROM run_reservations WHERE tenant_id=?", (tenant_id,))
                 db.commit()
                 return epoch
             except Exception:
@@ -760,6 +940,9 @@ class SQLiteTenantControlStore:
     def set_tenant_status(self, tenant_id: str, status: TenantStatus, *, reason: str) -> int:
         if status not in _TENANT_STATUSES:
             raise ValueError("invalid tenant status")
+        if status == "deleted":
+            raise TenantControlError("deleted is terminal and is reached only by hard deletion")
+        reason = _require_reason(reason)
         with closing(self._connect()) as db:
             db.execute("BEGIN IMMEDIATE")
             try:
@@ -772,19 +955,23 @@ class SQLiteTenantControlStore:
                 if old_status == status:
                     db.rollback()
                     return int(tenant["authority_epoch"])
+                allowed = _TENANT_TRANSITIONS.get(old_status, frozenset())
+                if status not in allowed:
+                    raise TenantControlError(
+                        f"invalid tenant lifecycle transition: {old_status}->{status}"
+                    )
                 _, epoch = self._mutate_epoch(
                     db,
                     tenant_id,
                     project_id=None,
                     kind="tenant.status",
-                    reason=f"{reason.strip()} ({old_status}->{status})",
+                    reason=f"{reason} ({old_status}->{status})",
                 )
                 db.execute(
                     "UPDATE tenants SET status=?,updated_at=? WHERE tenant_id=?",
                     (status, _utc_now(), tenant_id),
                 )
-                if status != "active":
-                    db.execute("DELETE FROM run_reservations WHERE tenant_id=?", (tenant_id,))
+                db.execute("DELETE FROM run_reservations WHERE tenant_id=?", (tenant_id,))
                 db.commit()
                 return epoch
             except Exception:
@@ -802,6 +989,9 @@ class SQLiteTenantControlStore:
     ) -> int:
         if status not in _PROJECT_STATUSES:
             raise ValueError("invalid project status")
+        if status == "deleted":
+            raise TenantControlError("deleted is terminal and is reached only by hard deletion")
+        reason = _require_reason(reason)
         with closing(self._connect()) as db:
             db.execute("BEGIN IMMEDIATE")
             try:
@@ -819,22 +1009,26 @@ class SQLiteTenantControlStore:
                         raise TenantControlError("unknown tenant")
                     db.rollback()
                     return int(tenant["authority_epoch"])
+                allowed = _PROJECT_TRANSITIONS.get(old_status, frozenset())
+                if status not in allowed:
+                    raise TenantControlError(
+                        f"invalid project lifecycle transition: {old_status}->{status}"
+                    )
                 _, epoch = self._mutate_epoch(
                     db,
                     tenant_id,
                     project_id=project_id,
                     kind="project.status",
-                    reason=f"{reason.strip()} ({old_status}->{status})",
+                    reason=f"{reason} ({old_status}->{status})",
                 )
                 db.execute(
                     "UPDATE projects SET status=?,updated_at=? WHERE project_id=?",
                     (status, _utc_now(), project_id),
                 )
-                if status != "active":
-                    db.execute(
-                        "DELETE FROM run_reservations WHERE tenant_id=? AND project_id=?",
-                        (tenant_id, project_id),
-                    )
+                db.execute(
+                    "DELETE FROM run_reservations WHERE tenant_id=? AND project_id=?",
+                    (tenant_id, project_id),
+                )
                 db.commit()
                 return epoch
             except Exception:
@@ -869,6 +1063,10 @@ class SQLiteTenantControlStore:
             "SELECT project_id,repository_id,created_at FROM repositories WHERE tenant_id=? ORDER BY project_id,repository_id",
             (tenant_id,),
         ).fetchall()
+        reservations = db.execute(
+            "SELECT reservation_id,project_id,run_key,repository_ids_json,repository_set_sha256,created_at FROM run_reservations WHERE tenant_id=? ORDER BY reservation_id",
+            (tenant_id,),
+        ).fetchall()
         return {
             "schema_version": "foundry.tenant-state-export.v1",
             "tenant": {
@@ -883,6 +1081,7 @@ class SQLiteTenantControlStore:
             },
             "projects": [dict(row) for row in projects],
             "repositories": [dict(row) for row in repositories],
+            "run_reservations": [dict(row) for row in reservations],
         }
 
     def export_tenant_state(self, tenant_id: str) -> dict[str, object]:
@@ -892,6 +1091,7 @@ class SQLiteTenantControlStore:
 
     def hard_delete_tenant_state(self, tenant_id: str, *, reason: str) -> dict[str, object]:
         """Delete persistent tenant control state after isolation data has been drained."""
+        reason = _require_reason(reason)
         with closing(self._connect()) as db:
             db.execute("BEGIN IMMEDIATE")
             try:
@@ -919,12 +1119,11 @@ class SQLiteTenantControlStore:
                     "schema_version": "foundry.tenant-control-deletion-receipt.v1",
                     "tenant_id": tenant_id,
                     "last_authority_epoch": epoch,
+                    "final_authority_epoch": epoch + 1,
                     "state_export_sha256": _sha256(body),
-                    "reason": reason.strip(),
+                    "reason": reason,
                     "deleted_at": deletion_time,
                 }
-                if not receipt_material["reason"]:
-                    raise ValueError("delete reason is required")
                 self._append_event(
                     db,
                     tenant_id=tenant_id,
