@@ -8,7 +8,7 @@ version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
   "typer>=0.21.0",
-  "agent-protocol @ git+https://github.com/foundry-engineering/agent-protocol.git@ce62b2e419a18d4fa40fb5c97df2025696298137",
+  "agent-protocol @ git+https://github.com/foundry-engineering/agent-protocol.git@8653751fd9f959a61f33f2a365ed2d25abbf8b05",
 ]
 
 [project.optional-dependencies]
