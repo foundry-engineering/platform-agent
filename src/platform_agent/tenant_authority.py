@@ -6,7 +6,7 @@ import importlib
 import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 from platform_agent.capability_router import CapabilityRegistry
@@ -23,6 +23,7 @@ from platform_agent.execution_authority import (
 )
 from platform_agent.grant_signing import ExecutionGrantSigner, sign_execution_grant
 from platform_agent.plan_admission import PlanAdmission
+from platform_agent.scope_guard import ScopeGuardError, validate_execution_request_scopes
 from platform_agent.tenant_control import (
     RunReservation,
     SQLiteTenantControlStore,
@@ -37,6 +38,7 @@ WorkspacePayloadHasher = Callable[[object], str]
 WorkspaceSigningMessage = Callable[[object], bytes]
 WorkspaceValidator = Callable[[object], None]
 WorkspaceSignatureVerifier = Callable[[object, Mapping[str, bytes]], tuple[str, ...]]
+_MAX_WORKSPACE_BINDING_LIFETIME = timedelta(hours=1)
 
 
 class TenantAuthorityError(SandboxAdmissionError):
@@ -80,12 +82,7 @@ class TenantSandboxAdmission:
             "admission_id": self.admission_id,
             "tenant_context": self.tenant_context.as_dict(),
             "tenant_snapshot_sha256": self.tenant_snapshot_sha256,
-            "reservation": {
-                "reservation_id": self.reservation.reservation_id,
-                "tenant_id": self.reservation.tenant_id,
-                "project_id": self.reservation.project_id,
-                "run_key": self.reservation.run_key,
-            },
+            "reservation": self.reservation.as_dict(),
             "dispatch": self.dispatch.as_dict(),
             "signed_grants": [dict(grant) for grant in self.signed_grants],
         }
@@ -150,12 +147,15 @@ def _snapshots_for_dispatch(
     requests: Sequence[ExecutionRequest],
 ) -> tuple[TenantExecutionSnapshot, ...]:
     snapshots: list[TenantExecutionSnapshot] = []
+    by_repository: dict[str, TenantExecutionSnapshot] = {}
     for request in requests:
         if request.repo is None:
             raise TenantAuthorityError(
                 f"tenant execution request requires repository binding: {request.task_id}"
             )
-        snapshots.append(store.snapshot(tenant_id, project_id, request.repo))
+        if request.repo not in by_repository:
+            by_repository[request.repo] = store.snapshot(tenant_id, project_id, request.repo)
+        snapshots.append(by_repository[request.repo])
     if not snapshots:
         raise TenantAuthorityError("tenant dispatch contains no execution requests")
     context = snapshots[0].context
@@ -206,6 +206,11 @@ def admit_tenant_dispatch(
     satisfied_preconditions: frozenset[str] = frozenset(),
 ) -> TenantSandboxAdmission:
     """Atomically admit ready work into one tenant isolation cell and sign its authority."""
+    try:
+        validate_execution_request_scopes(requests)
+    except ScopeGuardError as exc:
+        raise TenantAuthorityError(str(exc)) from exc
+
     dispatch = build_dispatch_plan(
         plan,
         admission=admission,
@@ -275,15 +280,24 @@ def admit_tenant_dispatch(
         for item in legacy_grants
     )
 
+    repositories = tuple(
+        sorted(
+            {
+                request.repo
+                for request in requests
+                if isinstance(request.repo, str) and request.repo
+            }
+        )
+    )
+    if not repositories:
+        raise TenantAuthorityError("tenant dispatch requires repository binding")
+
     reservation: RunReservation | None = None
     try:
-        first_repo = requests[0].repo
-        if first_repo is None:
-            raise TenantAuthorityError("tenant dispatch requires repository binding")
-        reservation = tenant_store.reserve_run(
+        reservation = tenant_store.reserve_dispatch(
             tenant_id,
             project_id,
-            first_repo,
+            list(repositories),
             run_key=dispatch.dispatch_id,
         )
         signed = tuple(
@@ -297,20 +311,27 @@ def admit_tenant_dispatch(
             requests=requests,
         )
         current = current_snapshots[0]
-        if not _same_context(context, current.context):
+        if any(not _same_context(context, item.context) for item in current_snapshots):
             raise TenantAuthorityError("tenant authority changed during grant issuance")
         if current.context.keyset_id != signer_set.keyset_id:
             raise TenantAuthorityError("tenant keyset changed during grant issuance")
+        if not tenant_store.reservation_is_active(reservation):
+            raise TenantAuthorityError("run reservation changed during grant issuance")
     except Exception:
         if reservation is not None:
-            tenant_store.release_run(reservation.reservation_id)
+            try:
+                tenant_store.release_run(reservation.reservation_id)
+            except Exception as release_exc:
+                raise TenantAuthorityError(
+                    "grant issuance failed and run reservation cleanup also failed"
+                ) from release_exc
         raise
 
     material = {
         "schema_version": "foundry.tenant-sandbox-admission.v1",
         "tenant_context": context.as_dict(),
         "tenant_snapshot_sha256": current.snapshot_sha256,
-        "reservation_id": reservation.reservation_id,
+        "reservation": reservation.as_dict(),
         "dispatch_id": dispatch.dispatch_id,
         "plan_admission_id": admission.admission_id,
         "candidate_sha256": admission.candidate_sha256,
@@ -351,12 +372,17 @@ def issue_workspace_binding(
         raise TenantAuthorityError("workspace signer keyset does not match current tenant keyset")
     if not signers:
         raise TenantAuthorityError("workspace binding requires at least one signer")
-    if issued_at.tzinfo is None or expires_at.tzinfo is None:
-        raise TenantAuthorityError("workspace binding timestamps must be timezone-aware")
+    if issued_at.tzinfo is None or issued_at.utcoffset() is None:
+        raise TenantAuthorityError("workspace binding issued_at must be timezone-aware")
+    if expires_at.tzinfo is None or expires_at.utcoffset() is None:
+        raise TenantAuthorityError("workspace binding expires_at must be timezone-aware")
     issued = issued_at.astimezone(UTC).replace(microsecond=0)
     expires = expires_at.astimezone(UTC).replace(microsecond=0)
-    if expires <= issued:
+    lifetime = expires - issued
+    if lifetime <= timedelta(0):
         raise TenantAuthorityError("workspace binding expiry must be after issue time")
+    if lifetime > _MAX_WORKSPACE_BINDING_LIFETIME:
+        raise TenantAuthorityError("workspace binding lifetime must not exceed one hour")
     if len(base_commit_sha) != 40 or any(ch not in "0123456789abcdef" for ch in base_commit_sha):
         raise TenantAuthorityError("workspace base commit must be lowercase 40-hex SHA")
 
