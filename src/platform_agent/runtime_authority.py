@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import importlib
 import json
-import sqlite3
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -50,16 +50,7 @@ class SQLiteAuthorityStateProvider:
         return self.store.snapshot(tenant_id, project_id, repository_id)
 
     def reservation_is_active(self, reservation: RunReservation) -> bool:
-        uri = f"file:{self.store.path.as_posix()}?mode=ro"
-        db = sqlite3.connect(uri, uri=True, timeout=5.0)
-        try:
-            row = db.execute(
-                "SELECT tenant_id,project_id,run_key FROM run_reservations WHERE reservation_id=?",
-                (reservation.reservation_id,),
-            ).fetchone()
-        finally:
-            db.close()
-        return row == (reservation.tenant_id, reservation.project_id, reservation.run_key)
+        return self.store.reservation_is_active(reservation)
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,6 +113,19 @@ def _canonical_json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+def _sha256(value: object) -> str:
+    return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def _repository_set_sha256(repository_ids: tuple[str, ...]) -> str:
+    return _sha256(
+        {
+            "schema_version": "foundry.run-repository-set.v1",
+            "repository_ids": list(repository_ids),
+        }
+    )
+
+
 def _same_context(left: TenantContext, right: Mapping[str, object]) -> bool:
     return _canonical_json(left.as_dict()) == _canonical_json(right)
 
@@ -155,23 +159,13 @@ def _validate_admission_runtime_state(
     authority_state: AuthorityStateProvider,
     target_repository_id: str,
 ) -> TenantExecutionSnapshot:
-    """Revalidate the complete admitted repository set before witness issuance.
-
-    The run reservation is a tenant/project concurrency lease, while each signed
-    Execution Grant carries repository-specific authority.  Before issuing a
-    fresh witness we therefore validate the reservation/dispatch relationship,
-    every grant's dispatch+tenant binding, and the current tenant state of every
-    repository represented by the admitted dispatch.  One stale repository
-    invalidates witness issuance for the entire admission.
-    """
+    """Revalidate the complete admitted repository set before witness issuance."""
     context = admission.tenant_context
     reservation = admission.reservation
     if reservation.tenant_id != context.tenant_id or reservation.project_id != context.project_id:
         raise RuntimeAuthorityError("run reservation belongs to another tenant/project")
     if reservation.run_key != admission.dispatch.dispatch_id:
         raise RuntimeAuthorityError("run reservation is not bound to the admitted dispatch")
-    if not authority_state.reservation_is_active(reservation):
-        raise RuntimeAuthorityError("run reservation is no longer active")
 
     assignment_task_ids = [item.task_id for item in admission.dispatch.assignments]
     if len(assignment_task_ids) != len(set(assignment_task_ids)):
@@ -207,8 +201,17 @@ def _validate_admission_runtime_state(
     if target_repository_id not in repositories:
         raise RuntimeAuthorityError("witness target repository is not part of admitted work")
 
+    canonical_repositories = tuple(sorted(repositories))
+    if reservation.repository_ids != canonical_repositories:
+        raise RuntimeAuthorityError("run reservation repository set differs from admitted work")
+    expected_repository_hash = _repository_set_sha256(canonical_repositories)
+    if reservation.repository_set_sha256 != expected_repository_hash:
+        raise RuntimeAuthorityError("run reservation repository-set hash is invalid")
+    if not authority_state.reservation_is_active(reservation):
+        raise RuntimeAuthorityError("run reservation is no longer active")
+
     target: TenantExecutionSnapshot | None = None
-    for repo in sorted(repositories):
+    for repo in canonical_repositories:
         snapshot = authority_state.snapshot(context.tenant_id, context.project_id, repo)
         if _canonical_json(snapshot.context.as_dict()) != _canonical_json(context.as_dict()):
             raise RuntimeAuthorityError(
