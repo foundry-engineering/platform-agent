@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from typing import Any
 
 import pytest
 
@@ -29,27 +30,44 @@ TENANT = TenantContext(
     keyset_id="keyset_fixture.v1",
 )
 REPO = "foundry-engineering/example"
+REPO_TWO = "foundry-engineering/second"
+DISPATCH_ID = "dsp_" + "e" * 32
 GRANT_ID = "sgr_" + "b" * 32
+GRANT_TWO_ID = "sgr_" + "2" * 32
+TASK_ID = "tsk_" + "1" * 32
+TASK_TWO_ID = "tsk_" + "2" * 32
 BINDING_ID = "wsb_" + "c" * 32
 RESERVATION = RunReservation(
     reservation_id="rsv_" + "d" * 32,
     tenant_id=TENANT.tenant_id,
     project_id=TENANT.project_id,
-    run_key="dsp_" + "e" * 32,
+    run_key=DISPATCH_ID,
 )
 NOW = datetime(2026, 9, 15, 20, 30, tzinfo=UTC)
 
 
-def _grant(**overrides: object) -> dict[str, object]:
-    value: dict[str, object] = {
+def _sha(value: object) -> str:
+    raw = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _grant(
+    *,
+    grant_id: str = GRANT_ID,
+    task_id: str = TASK_ID,
+    repo: str = REPO,
+    context: TenantContext = TENANT,
+    dispatch_id: str = DISPATCH_ID,
+) -> dict[str, object]:
+    return {
         "schema_version": "execution-grant.v1",
-        "grant_id": GRANT_ID,
-        "tenant_context": TENANT.as_dict(),
-        "repo": REPO,
+        "grant_id": grant_id,
+        "authority": {"dispatch_id": dispatch_id},
+        "task_id": task_id,
+        "tenant_context": context.as_dict(),
+        "repo": repo,
         "signatures": [{"kid": "kid_grant.v1"}],
     }
-    value.update(overrides)
-    return value
 
 
 def _binding(**overrides: object) -> dict[str, object]:
@@ -63,46 +81,66 @@ def _binding(**overrides: object) -> dict[str, object]:
     return value
 
 
-def _admission(grant: dict[str, object] | None = None):
-    actual = grant or _grant()
+def _dispatch(task_ids: tuple[str, ...]):
     return SimpleNamespace(
-        tenant_context=TENANT,
-        reservation=RESERVATION,
-        signed_grants=(actual,),
+        dispatch_id=DISPATCH_ID,
+        assignments=tuple(SimpleNamespace(task_id=task_id) for task_id in task_ids),
     )
 
 
-def _snapshot(context: TenantContext = TENANT) -> TenantExecutionSnapshot:
+def _admission(
+    grants: tuple[dict[str, object], ...] | None = None,
+    *,
+    reservation: RunReservation = RESERVATION,
+):
+    actual = grants or (_grant(),)
+    return SimpleNamespace(
+        tenant_context=TENANT,
+        reservation=reservation,
+        signed_grants=actual,
+        dispatch=_dispatch(tuple(str(item["task_id"]) for item in actual)),
+    )
+
+
+def _snapshot(repository_id: str, context: TenantContext = TENANT) -> TenantExecutionSnapshot:
     body: dict[str, object] = {
         "context": context.as_dict(),
-        "repository_id": REPO,
+        "repository_id": repository_id,
         "tenant_status": "active",
         "project_status": "active",
     }
     return TenantExecutionSnapshot(
         context=context,
-        repository_id=REPO,
+        repository_id=repository_id,
         tenant_status="active",
         project_status="active",
         quotas=TenantQuotaLimits(),
         usage=TenantQuotaUsage(active_runs=1, artifact_bytes=0),
-        snapshot_sha256=runtime._sha256(body),
+        snapshot_sha256=_sha(body),
     )
 
 
 class FakeState:
-    def __init__(self, *, context: TenantContext = TENANT, reservation_active: bool = True) -> None:
-        self.context = context
+    def __init__(
+        self,
+        *,
+        contexts: dict[str, TenantContext] | None = None,
+        reservation_active: bool = True,
+    ) -> None:
+        self.contexts = contexts or {REPO: TENANT, REPO_TWO: TENANT}
         self.reservation_active = reservation_active
+        self.snapshots_requested: list[str] = []
 
     def snapshot(self, tenant_id: str, project_id: str, repository_id: str):
         assert tenant_id == TENANT.tenant_id
         assert project_id == TENANT.project_id
-        assert repository_id == REPO
-        return _snapshot(self.context)
+        self.snapshots_requested.append(repository_id)
+        if repository_id not in self.contexts:
+            raise RuntimeAuthorityError("repository is no longer bound")
+        return _snapshot(repository_id, self.contexts[repository_id])
 
     def reservation_is_active(self, reservation: RunReservation) -> bool:
-        assert reservation == RESERVATION
+        assert reservation == RESERVATION or reservation.reservation_id == RESERVATION.reservation_id
         return self.reservation_active
 
 
@@ -146,25 +184,71 @@ def _signers() -> AuthorityWitnessSignerSet:
     )
 
 
-def test_live_reserved_authority_issues_signed_witness(monkeypatch: pytest.MonkeyPatch) -> None:
+def _issue(monkeypatch: pytest.MonkeyPatch, admission=None, *, state=None):
     _install_protocol(monkeypatch)
-    document = issue_authority_witness(
-        _admission(),
+    return issue_authority_witness(
+        admission or _admission(),
         grant=_grant(),
         workspace_binding=_binding(),
         repository_id=REPO,
-        authority_state=FakeState(),
+        authority_state=state or FakeState(),
         signer_set=_signers(),
         issued_at=NOW,
         expires_at=NOW + timedelta(seconds=60),
     )
+
+
+def test_live_reserved_authority_issues_signed_witness(monkeypatch: pytest.MonkeyPatch) -> None:
+    document = _issue(monkeypatch)
     assert document["witness_id"] == "taw_" + "f" * 32
     assert document["reservation_id"] == RESERVATION.reservation_id
     assert document["execution_grant_id"] == GRANT_ID
 
 
+def test_all_repositories_in_admission_are_revalidated_before_witness(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    second = _grant(grant_id=GRANT_TWO_ID, task_id=TASK_TWO_ID, repo=REPO_TWO)
+    state = FakeState()
+    _issue(monkeypatch, _admission((_grant(), second)), state=state)
+    assert state.snapshots_requested == [REPO, REPO_TWO]
+
+
+def test_stale_second_repository_blocks_first_repository_witness(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    second = _grant(grant_id=GRANT_TWO_ID, task_id=TASK_TWO_ID, repo=REPO_TWO)
+    revoked = TenantContext(
+        tenant_id=TENANT.tenant_id,
+        project_id=TENANT.project_id,
+        cell_id=TENANT.cell_id,
+        authority_epoch=2,
+        keyset_id=TENANT.keyset_id,
+    )
+    state = FakeState(contexts={REPO: TENANT, REPO_TWO: revoked})
+    with pytest.raises(RuntimeAuthorityError, match="admitted repository"):
+        _issue(monkeypatch, _admission((_grant(), second)), state=state)
+
+
+def test_reservation_must_be_bound_to_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    wrong = RunReservation(
+        reservation_id=RESERVATION.reservation_id,
+        tenant_id=TENANT.tenant_id,
+        project_id=TENANT.project_id,
+        run_key="dsp_" + "9" * 32,
+    )
+    with pytest.raises(RuntimeAuthorityError, match="not bound to the admitted dispatch"):
+        _issue(monkeypatch, _admission(reservation=wrong))
+
+
+def test_grant_tasks_must_exactly_match_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    admission = _admission()
+    admission.dispatch = _dispatch((TASK_ID, TASK_TWO_ID))
+    with pytest.raises(RuntimeAuthorityError, match="do not exactly match"):
+        _issue(monkeypatch, admission)
+
+
 def test_revoked_epoch_blocks_witness_issuance(monkeypatch: pytest.MonkeyPatch) -> None:
-    _install_protocol(monkeypatch)
     revoked = TenantContext(
         tenant_id=TENANT.tenant_id,
         project_id=TENANT.project_id,
@@ -173,31 +257,12 @@ def test_revoked_epoch_blocks_witness_issuance(monkeypatch: pytest.MonkeyPatch) 
         keyset_id=TENANT.keyset_id,
     )
     with pytest.raises(RuntimeAuthorityError, match="authority changed"):
-        issue_authority_witness(
-            _admission(),
-            grant=_grant(),
-            workspace_binding=_binding(),
-            repository_id=REPO,
-            authority_state=FakeState(context=revoked),
-            signer_set=_signers(),
-            issued_at=NOW,
-            expires_at=NOW + timedelta(seconds=60),
-        )
+        _issue(monkeypatch, state=FakeState(contexts={REPO: revoked, REPO_TWO: revoked}))
 
 
 def test_released_reservation_blocks_witness_issuance(monkeypatch: pytest.MonkeyPatch) -> None:
-    _install_protocol(monkeypatch)
     with pytest.raises(RuntimeAuthorityError, match="reservation is no longer active"):
-        issue_authority_witness(
-            _admission(),
-            grant=_grant(),
-            workspace_binding=_binding(),
-            repository_id=REPO,
-            authority_state=FakeState(reservation_active=False),
-            signer_set=_signers(),
-            issued_at=NOW,
-            expires_at=NOW + timedelta(seconds=60),
-        )
+        _issue(monkeypatch, state=FakeState(reservation_active=False))
 
 
 def test_grant_not_in_admission_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
