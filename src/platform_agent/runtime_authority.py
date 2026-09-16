@@ -4,10 +4,10 @@ import base64
 import importlib
 import json
 import sqlite3
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, Protocol, cast
+from typing import Protocol, cast
 
 from platform_agent.tenant_authority import TenantSandboxAdmission
 from platform_agent.tenant_control import (
@@ -143,14 +143,82 @@ def _grant_in_admission(
     grant: Mapping[str, object],
 ) -> Mapping[str, object]:
     grant_id = _string(grant.get("grant_id"), field="grant.grant_id")
-    matches = [
-        item
-        for item in admission.signed_grants
-        if item.get("grant_id") == grant_id
-    ]
+    matches = [item for item in admission.signed_grants if item.get("grant_id") == grant_id]
     if len(matches) != 1 or _canonical_json(matches[0]) != _canonical_json(grant):
         raise RuntimeAuthorityError("Execution Grant is not exactly part of this tenant admission")
     return matches[0]
+
+
+def _validate_admission_runtime_state(
+    admission: TenantSandboxAdmission,
+    *,
+    authority_state: AuthorityStateProvider,
+    target_repository_id: str,
+) -> TenantExecutionSnapshot:
+    """Revalidate the complete admitted repository set before witness issuance.
+
+    The run reservation is a tenant/project concurrency lease, while each signed
+    Execution Grant carries repository-specific authority.  Before issuing a
+    fresh witness we therefore validate the reservation/dispatch relationship,
+    every grant's dispatch+tenant binding, and the current tenant state of every
+    repository represented by the admitted dispatch.  One stale repository
+    invalidates witness issuance for the entire admission.
+    """
+    context = admission.tenant_context
+    reservation = admission.reservation
+    if reservation.tenant_id != context.tenant_id or reservation.project_id != context.project_id:
+        raise RuntimeAuthorityError("run reservation belongs to another tenant/project")
+    if reservation.run_key != admission.dispatch.dispatch_id:
+        raise RuntimeAuthorityError("run reservation is not bound to the admitted dispatch")
+    if not authority_state.reservation_is_active(reservation):
+        raise RuntimeAuthorityError("run reservation is no longer active")
+
+    assignment_task_ids = [item.task_id for item in admission.dispatch.assignments]
+    if len(assignment_task_ids) != len(set(assignment_task_ids)):
+        raise RuntimeAuthorityError("admitted dispatch contains duplicate task assignments")
+
+    grant_ids: list[str] = []
+    grant_task_ids: list[str] = []
+    repositories: set[str] = set()
+    for index, grant in enumerate(admission.signed_grants):
+        grant_id = _string(grant.get("grant_id"), field=f"admission.grants[{index}].grant_id")
+        task_id = _string(grant.get("task_id"), field=f"admission.grants[{index}].task_id")
+        repo = _string(grant.get("repo"), field=f"admission.grants[{index}].repo")
+        authority = _mapping(grant.get("authority"), field=f"admission.grants[{index}].authority")
+        if _string(authority.get("dispatch_id"), field="grant.authority.dispatch_id") != admission.dispatch.dispatch_id:
+            raise RuntimeAuthorityError("Execution Grant belongs to another dispatch")
+        tenant = _mapping(
+            grant.get("tenant_context"), field=f"admission.grants[{index}].tenant_context"
+        )
+        if not _same_context(context, tenant):
+            raise RuntimeAuthorityError("Execution Grant tenant context differs inside admission")
+        grant_ids.append(grant_id)
+        grant_task_ids.append(task_id)
+        repositories.add(repo)
+
+    if not grant_ids:
+        raise RuntimeAuthorityError("tenant admission contains no signed Execution Grants")
+    if len(grant_ids) != len(set(grant_ids)):
+        raise RuntimeAuthorityError("tenant admission contains duplicate Execution Grant ids")
+    if len(grant_task_ids) != len(set(grant_task_ids)):
+        raise RuntimeAuthorityError("tenant admission contains duplicate grant task ids")
+    if set(grant_task_ids) != set(assignment_task_ids):
+        raise RuntimeAuthorityError("signed grant tasks do not exactly match admitted dispatch")
+    if target_repository_id not in repositories:
+        raise RuntimeAuthorityError("witness target repository is not part of admitted work")
+
+    target: TenantExecutionSnapshot | None = None
+    for repo in sorted(repositories):
+        snapshot = authority_state.snapshot(context.tenant_id, context.project_id, repo)
+        if _canonical_json(snapshot.context.as_dict()) != _canonical_json(context.as_dict()):
+            raise RuntimeAuthorityError(
+                f"tenant authority changed for admitted repository before witness issuance: {repo}"
+            )
+        if repo == target_repository_id:
+            target = snapshot
+    if target is None:
+        raise RuntimeAuthorityError("witness target repository snapshot is unavailable")
+    return target
 
 
 def issue_authority_witness(
@@ -179,15 +247,11 @@ def issue_authority_witness(
     if expires <= issued or expires - issued > timedelta(seconds=120):
         raise RuntimeAuthorityError("Authority Witness must have a positive lifetime <= 120 seconds")
 
-    current = authority_state.snapshot(
-        admission.tenant_context.tenant_id,
-        admission.tenant_context.project_id,
-        repository_id,
+    current = _validate_admission_runtime_state(
+        admission,
+        authority_state=authority_state,
+        target_repository_id=repository_id,
     )
-    if _canonical_json(current.context.as_dict()) != _canonical_json(admission.tenant_context.as_dict()):
-        raise RuntimeAuthorityError("tenant authority changed before witness issuance")
-    if not authority_state.reservation_is_active(admission.reservation):
-        raise RuntimeAuthorityError("run reservation is no longer active")
 
     grant_tenant = _mapping(admitted_grant.get("tenant_context"), field="grant.tenant_context")
     if not _same_context(current.context, grant_tenant):
