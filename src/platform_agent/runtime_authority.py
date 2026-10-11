@@ -59,7 +59,7 @@ class SQLiteAuthorityStateProvider:
             ).fetchone()
         finally:
             db.close()
-        return row == (reservation.tenant_id, reservation.project_id, reservation.run_key)
+        return bool(row == (reservation.tenant_id, reservation.project_id, reservation.run_key))
 
 
 @dataclass(frozen=True, slots=True)

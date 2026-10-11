@@ -29,7 +29,7 @@ class FakeAdmissions:
         self.context = TenantContext(
             tenant_id="tnt_fixture0001",
             project_id="prj_fixture0001",
-            cell_id="cell_0123456789abcdef",
+            cell_id="cell_0123456789abcdef0123456789abcdef",
             authority_epoch=7,
             keyset_id="keyset_fixture.v1",
         )
@@ -129,7 +129,7 @@ def _admission(package: dict[str, object]) -> SkillAdmissionRecord:
         admission_id="ska_" + "c" * 32,
         tenant_id="tnt_fixture0001",
         project_id="prj_fixture0001",
-        cell_id="cell_0123456789abcdef",
+        cell_id="cell_0123456789abcdef0123456789abcdef",
         role_id="bookkeeper",
         skill_id="finance.reconcile",
         skill_version="1.0.0",

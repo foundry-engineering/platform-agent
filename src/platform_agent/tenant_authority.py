@@ -7,7 +7,7 @@ import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import cast
 
 from platform_agent.capability_router import CapabilityRegistry
 from platform_agent.control_plane import DispatchPlan, build_dispatch_plan

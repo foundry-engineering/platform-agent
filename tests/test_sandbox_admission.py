@@ -478,12 +478,12 @@ def test_empty_target_scope_denies_filesystem_execution(monkeypatch: pytest.Monk
 
 
 @pytest.mark.parametrize(
-    ("request", "message"),
+    ("execution_request", "message"),
     [
         (_request(repo="foundry-engineering/other"), "repo does not match"),
-        (_request(write_paths=("docs/out.txt",)), "not covered by requested read scope"),
-        (_request(write_paths=("src/../escape.txt",)), "path traversal"),
-        (_request(write_paths=(".eng/owned.txt",)), "runtime metadata"),
+        (_request(write_paths=("docs/out.txt",)), "not covered by explicit read scope"),
+        (_request(write_paths=("src/../escape.txt",)), "traversal or ambiguity"),
+        (_request(write_paths=(".eng/owned.txt",)), "reserved runtime/VCS metadata"),
         (_request(max_file_bytes=2097152), "max_file_bytes exceeds policy"),
         (_request(allow_delete=True), "delete is denied"),
         (_request(tool_ids=("tool_shell",)), "tools denied by policy"),
@@ -510,8 +510,8 @@ def test_empty_target_scope_denies_filesystem_execution(monkeypatch: pytest.Monk
 )
 def test_policy_and_scope_violations_fail_closed(
     monkeypatch: pytest.MonkeyPatch,
-    request: ExecutionRequest,
+    execution_request: ExecutionRequest,
     message: str,
 ) -> None:
     with pytest.raises(SandboxAdmissionError, match=message):
-        _admit(monkeypatch, request=request)
+        _admit(monkeypatch, request=execution_request)

@@ -123,14 +123,11 @@ class CapabilityRegistry:
                 version = capability.get("version")
                 input_schema = capability.get("input_schema")
                 output_schema = capability.get("output_schema")
-                if not all(
-                    isinstance(value, str)
-                    for value in (
-                        capability_id,
-                        version,
-                        input_schema,
-                        output_schema,
-                    )
+                if (
+                    not isinstance(capability_id, str)
+                    or not isinstance(version, str)
+                    or not isinstance(input_schema, str)
+                    or not isinstance(output_schema, str)
                 ):
                     raise CapabilityRegistryError(
                         f"advertisement for {agent_id} has malformed capability fields"

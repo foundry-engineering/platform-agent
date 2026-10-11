@@ -9,7 +9,6 @@ from collections.abc import Callable, Mapping
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any
 
 WorkIntentValidator = Callable[[object], None]
 

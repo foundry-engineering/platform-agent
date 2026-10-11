@@ -12,9 +12,14 @@ class ScopeGuardError(ValueError):
 
 
 class FilesystemScopeRequest(Protocol):
-    task_id: str
-    read_paths: tuple[str, ...]
-    write_paths: tuple[str, ...]
+    @property
+    def task_id(self) -> str: ...
+
+    @property
+    def read_paths(self) -> tuple[str, ...]: ...
+
+    @property
+    def write_paths(self) -> tuple[str, ...]: ...
 
 
 def normalize_authority_path(value: str, *, field: str) -> PurePosixPath:
