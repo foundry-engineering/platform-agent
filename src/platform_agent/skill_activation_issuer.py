@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from agent_protocol.execution_scope import validate_scoped_tenant_context
 from agent_protocol.skill_activation import (
     derive_skill_activation_id,
     skill_activation_signed_payload_sha256,
@@ -23,7 +24,42 @@ class SkillActivationIssuerError(RuntimeError):
 
 
 SignerCallback = Callable[[bytes], bytes]
-AuthorityBindingVerifier = Callable[[str, str, TenantContext, str, str], None]
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedExecutionScope:
+    """Exact assignment scope returned by trusted live authority verification."""
+
+    workspace_id: str
+    assignment_ref: str
+    role_id: str
+    role_manifest_ref: str
+    skill_id: str
+    skill_manifest_ref: str
+    studio_id: str | None = None
+    tool_id: str | None = None
+
+    def as_dict(self) -> dict[str, object]:
+        scope: dict[str, object] = {
+            "schema_version": "execution-scope.v1",
+            "workspace_id": self.workspace_id,
+            "assignment_ref": self.assignment_ref,
+            "professional_binding": {
+                "schema_version": "professional-binding.v1",
+                "role_id": self.role_id,
+                "role_manifest_ref": self.role_manifest_ref,
+                "skill_id": self.skill_id,
+                "skill_manifest_ref": self.skill_manifest_ref,
+            },
+        }
+        if self.studio_id is not None:
+            scope["studio_id"] = self.studio_id
+        if self.tool_id is not None:
+            scope["tool_id"] = self.tool_id
+        return scope
+
+
+AuthorityBindingVerifier = Callable[[str, str, TenantContext, str, str], VerifiedExecutionScope]
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,7 +184,7 @@ class SkillActivationIssuer:
             )
 
         try:
-            self._verify_authority_binding(
+            binding = self._verify_authority_binding(
                 authority_class,
                 authority_id,
                 context,
@@ -158,12 +194,31 @@ class SkillActivationIssuer:
         except Exception as exc:
             raise SkillActivationIssuerError("governing authority verification failed") from exc
 
+        if not isinstance(binding, VerifiedExecutionScope):
+            raise SkillActivationIssuerError(
+                "governing authority must return verified execution scope"
+            )
+        scoped_context = context.as_dict()
+        scoped_context["execution_scope"] = binding.as_dict()
+        try:
+            validate_scoped_tenant_context(
+                scoped_context,
+                role_id=role_id,
+                skill_id=admission.skill_id,
+                role_manifest_ref=binding.role_manifest_ref,
+                skill_manifest_ref="sha256:" + admission.skill_contract_sha256,
+            )
+        except Exception as exc:
+            raise SkillActivationIssuerError(
+                "verified execution scope does not match the admitted profession and skill"
+            ) from exc
+
         issued_at = self._canonical_utc(current)
         expires_at = self._canonical_utc(current + timedelta(seconds=lifetime_seconds))
         document: dict[str, object] = {
             "schema_version": "skill-activation.v1",
             "activation_id": "",
-            "tenant_context": context.as_dict(),
+            "tenant_context": scoped_context,
             "admission_id": admission.admission_id,
             "run_id": run_id,
             "task_id": task_id,

@@ -18,6 +18,7 @@ from platform_agent.skill_activation_issuer import (
     SkillActivationIssuer,
     SkillActivationIssuerError,
     SkillActivationSigner,
+    VerifiedExecutionScope,
 )
 from platform_agent.skill_admission import SkillAdmissionRecord
 from platform_agent.tenant_control import TenantContext, TenantNotActiveError
@@ -75,6 +76,17 @@ def _contract() -> dict[str, object]:
             "missing_implementation": "deny",
         },
     }
+
+
+def _scope() -> VerifiedExecutionScope:
+    return VerifiedExecutionScope(
+        workspace_id="workspace_main",
+        assignment_ref="assignment_1",
+        role_id="bookkeeper",
+        role_manifest_ref="sha256:" + "7" * 64,
+        skill_id="finance.reconcile",
+        skill_manifest_ref="sha256:" + canonical_sha256(_contract()),
+    )
 
 
 def _package() -> dict[str, object]:
@@ -173,9 +185,10 @@ def test_issue_real_signed_activation_for_exact_admitted_package() -> None:
         context: TenantContext,
         task_id: str,
         agent_id: str,
-    ) -> None:
+    ) -> VerifiedExecutionScope:
         assert context == admissions.context
         authority_checks.append((authority_class, authority_id, task_id, agent_id))
+        return _scope()
 
     signer, public_key = _signer()
     issuer = SkillActivationIssuer(
@@ -200,6 +213,9 @@ def test_issue_real_signed_activation_for_exact_admitted_package() -> None:
 
     assert activation["package_id"] == package["package_id"]
     assert activation["admission_id"] == admissions.record.admission_id
+    context = activation["tenant_context"]
+    assert isinstance(context, dict)
+    assert context["execution_scope"] == _scope().as_dict()
     assert authority_checks == [
         (
             "work-authority",
@@ -221,7 +237,7 @@ def test_different_package_binding_is_rejected() -> None:
     signer, _ = _signer()
     issuer = SkillActivationIssuer(
         admissions=admissions,  # type: ignore[arg-type]
-        verify_authority_binding=lambda *_: None,
+        verify_authority_binding=lambda *_: _scope(),
     )
 
     with pytest.raises(SkillActivationIssuerError, match="active persisted admission"):
@@ -248,7 +264,7 @@ def test_bad_external_signer_output_fails_closed() -> None:
     admissions.record = _admission(package)
     issuer = SkillActivationIssuer(
         admissions=admissions,  # type: ignore[arg-type]
-        verify_authority_binding=lambda *_: None,
+        verify_authority_binding=lambda *_: _scope(),
     )
     bad_signer = SkillActivationSigner(
         kid="kid_activation-test.v1",
@@ -281,10 +297,48 @@ def test_inactive_tenant_or_project_cannot_receive_activation() -> None:
     signer, _ = _signer()
     issuer = SkillActivationIssuer(
         admissions=admissions,  # type: ignore[arg-type]
-        verify_authority_binding=lambda *_: None,
+        verify_authority_binding=lambda *_: _scope(),
     )
 
     with pytest.raises(TenantNotActiveError):
+        issuer.issue(
+            tenant_id="tnt_fixture0001",
+            project_id="prj_fixture0001",
+            role_id="bookkeeper",
+            skill_id="finance.reconcile",
+            package_id=str(package["package_id"]),
+            package=package,
+            run_id="run_" + "b" * 32,
+            task_id="tsk_" + "a" * 32,
+            agent_id="agent_finance.worker",
+            authority_class="work-authority",
+            authority_id="wka_" + "f" * 32,
+            signers=[signer],
+            now=datetime(2026, 9, 16, 10, 12, tzinfo=UTC),
+        )
+
+
+@pytest.mark.parametrize(
+    "scope",
+    [
+        None,
+        replace(_scope(), workspace_id=""),
+        replace(_scope(), assignment_ref=""),
+        replace(_scope(), role_id="tax-advisor"),
+        replace(_scope(), skill_id="finance.other"),
+        replace(_scope(), skill_manifest_ref="sha256:" + "9" * 64),
+    ],
+)
+def test_activation_rejects_missing_or_rebound_verified_scope(scope: object) -> None:
+    package = _package()
+    admissions = FakeAdmissions()
+    admissions.record = _admission(package)
+    signer, _ = _signer()
+    issuer = SkillActivationIssuer(
+        admissions=admissions,  # type: ignore[arg-type]
+        verify_authority_binding=lambda *_: scope,  # type: ignore[return-value]
+    )
+    with pytest.raises(SkillActivationIssuerError, match="execution scope"):
         issuer.issue(
             tenant_id="tnt_fixture0001",
             project_id="prj_fixture0001",

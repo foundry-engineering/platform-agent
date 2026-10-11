@@ -1,50 +1,56 @@
 name: ci
-
-on:
+'on':
   pull_request:
   push:
     branches: [main]
   workflow_dispatch:
-
 permissions:
   contents: read
-
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: platform-ci-${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
-
 jobs:
   test:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - name: Checkout
+      - name: Checkout platform agent
         uses: actions/checkout@v4
-
-      - name: Setup uv
-        uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
+      - uses: actions/setup-python@v5
         with:
-          enable-cache: true
-
-      - name: Set up Python
-        run: uv python install 3.12
-
-      - name: Sync
+          python-version: "3.12"
+      - name: Sync pinned protocol and development dependencies
         env:
           GIT_TOKEN: ${{ secrets.FOUNDRY_CI_READ_TOKEN }}
         run: |
           test -n "${GIT_TOKEN}" || { echo "::error::FOUNDRY_CI_READ_TOKEN is not set"; exit 1; }
           git config --global url."https://x-access-token:${GIT_TOKEN}@github.com/".insteadOf "https://github.com/"
           uv sync --extra dev --locked
-
-      - name: Compile
-        run: uv run python -m compileall -q src tests
-
-      - name: Ruff
-        run: uv run ruff check .
-
-      - name: Mypy
-        run: uv run mypy src
-
-      - name: Pytest
-        run: uv run pytest -q
+      - run: uv run python -m compileall -q src tests scripts
+      - run: uv run ruff check .
+      - run: uv run mypy src
+      - run: uv run pytest -q
+      - name: Checkout coordinated runner
+        uses: actions/checkout@v4
+        with:
+          repository: foundry-engineering/foundry-runners
+          ref: 9410358c44ecfef96509176d9e2fca99ea839d56
+          token: ${{ secrets.FOUNDRY_CI_READ_TOKEN }}
+          path: .integration/runner
+          persist-credentials: false
+      - name: Checkout coordinated registry
+        uses: actions/checkout@v4
+        with:
+          repository: foundry-engineering/foundry-registry
+          ref: 35b220530b08844bcdf525771b1452b67eacbe5f
+          token: ${{ secrets.FOUNDRY_CI_READ_TOKEN }}
+          path: .integration/registry
+          persist-credentials: false
+      - name: Type-check and execute cross-repository contract handoff
+        env:
+          PYTHONPATH: ${{ github.workspace }}/.integration/runner/src
+          MYPYPATH: ${{ github.workspace }}/.integration/runner/src
+        run: |
+          uv run mypy scripts/verify_registry_runner_contract.py
+          uv run python scripts/verify_registry_runner_contract.py --registry-root .integration/registry --registry-commit 35b220530b08844bcdf525771b1452b67eacbe5f
