@@ -35,7 +35,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: foundry-engineering/foundry-runners
-          ref: 9410358c44ecfef96509176d9e2fca99ea839d56
+          ref: 690c64db17a53606558adaf28fd59540cbe1192b
           token: ${{ secrets.FOUNDRY_CI_READ_TOKEN }}
           path: .integration/runner
           persist-credentials: false
