@@ -8,7 +8,7 @@ version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
   "typer>=0.21.0",
-  "engineering-agent @ git+https://github.com/foundry-engineering/engineering-agent.git@641fb080611f3328f96a74dc065f03958a671d27",
+  "agent-protocol @ git+https://github.com/foundry-engineering/agent-protocol.git@43c72f711ed095069a56ba6844d8672807cba19d",
 ]
 
 [project.optional-dependencies]
@@ -16,6 +16,7 @@ dev = [
   "pytest>=9",
   "ruff>=0.15",
   "mypy>=1.19",
+  "types-jsonschema>=4.26.0.20260202",
 ]
 
 [project.scripts]
