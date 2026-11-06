@@ -5,7 +5,7 @@ requires-python = ">=3.12"
 [[package]]
 name = "agent-protocol"
 version = "0.1.0"
-source = { git = "https://github.com/foundry-engineering/agent-protocol.git?rev=43c72f711ed095069a56ba6844d8672807cba19d#43c72f711ed095069a56ba6844d8672807cba19d" }
+source = { git = "https://github.com/foundry-engineering/agent-protocol.git?rev=0b15c1d71da86b0543cade03416f41907516f448#0b15c1d71da86b0543cade03416f41907516f448" }
 dependencies = [
     { name = "cryptography" },
     { name = "jsonschema" },
@@ -397,7 +397,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "agent-protocol", git = "https://github.com/foundry-engineering/agent-protocol.git?rev=43c72f711ed095069a56ba6844d8672807cba19d" },
+    { name = "agent-protocol", git = "https://github.com/foundry-engineering/agent-protocol.git?rev=0b15c1d71da86b0543cade03416f41907516f448" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.19" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.15" },
