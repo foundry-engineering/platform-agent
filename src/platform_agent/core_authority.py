@@ -60,6 +60,7 @@ class ClaimedCoreAuthority:
     provider_budget_microusd: int
     allowed_actions: tuple[str, ...]
     scope: VerifiedExecutionScope
+    artifact_id: str | None = None
 
     def __post_init__(self) -> None:
         for name in ("tenant_id", "project_id", "execution_job_id", "work_node_id", "agent_id"):
@@ -67,6 +68,8 @@ class ClaimedCoreAuthority:
                 raise ValueError("claimed Core binding requires canonical identifiers")
         if not isinstance(self.scope, VerifiedExecutionScope):
             raise ValueError("verified professional execution scope required")
+        if self.artifact_id is not None and not _identifier(self.artifact_id):
+            raise ValueError("canonical claimed artifact reference required")
         if not re.fullmatch(r"wka_[a-f0-9]{32}", self.authority_id):
             raise ValueError("Core work authority identifier required")
         if type(self.authority_epoch) is not int or not 1 <= self.authority_epoch <= _MAX_INTEGER:
@@ -244,6 +247,8 @@ class CoreAuthorityVerifier:
             "professionalRole": binding.professional_role,
             "roleManifestRef": binding.scope.role_manifest_ref,
         }
+        if binding.artifact_id is not None:
+            expected["artifactId"] = binding.artifact_id
         if (any(response.get(key) != value for key, value in expected.items())
                 or type(response.get("authorityEpoch")) is not int
                 or response.get("authorityEpoch") != binding.authority_epoch

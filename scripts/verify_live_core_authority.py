@@ -13,6 +13,7 @@ import sys
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from core_issuer_probe import verify_core_work_authority_issuer
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from agent_protocol.core_work_request import core_work_request_material
@@ -60,6 +61,7 @@ def main() -> None:
         professional_role=_text(body, "professionalRole"),
         provider_budget_microusd=_integer(body, "providerBudgetMicrousd"),
         allowed_actions=("read_context", "produce_artifact"), scope=scope,
+        artifact_id=_text(body, "artifactId"),
     )
     context = ssl.create_default_context(cafile=_text(body, "caFile"))
     client = CoreAuthorityClient(origin=_text(body, "origin"), ssl_context=context,
@@ -165,6 +167,7 @@ def main() -> None:
         checks += 1
     else:
         raise AssertionError("signed authority bypassed Core TLS verification")
+    checks += verify_core_work_authority_issuer(binding, client)
     print(json.dumps({"schemaVersion": "foundry.core-authority-acceptance.v1", "checks": checks}))
 
 
