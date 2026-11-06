@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import os
 import re
+import hashlib
+import json
+from threading import Thread
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
@@ -18,7 +21,8 @@ from psycopg.conninfo import conninfo_to_dict
 
 from foundry_runner.economic_gate import EconomicAccessDenied, EconomicGate
 from foundry_runner.postgres_economic_store import PostgresEconomicReservationStore
-from foundry_runner.execution_provider import HttpExecutionProvider
+from foundry_runner.execution_provider import HttpExecutionProvider, LocalExecutionProvider
+from foundry_runner.http_transport import HttpResponse
 from foundry_runner.network_egress import EgressPolicy
 from platform_agent.artifact_worker_runtime import build_core_artifact_worker
 from platform_agent.core_execution_authorizer import CoreExecutionAuthorizationError
@@ -142,3 +146,63 @@ def test_actual_worker_composes_signed_issuers_postgres_gates_settlement_and_pri
         assert db.execute("SELECT count(*) FROM foundry_waw_invocation_claim").fetchone() == (1,)
         assert db.execute("SELECT actual_total_microusd FROM foundry_spend_settlement").fetchone() == (100000,)
         assert db.execute("SELECT reserved_total_microusd FROM foundry_cost_envelope_state").fetchone() == (500000,)
+
+
+def test_worker_reaches_production_engineering_http_handler_and_accounts_for_its_dop(database, tmp_path, monkeypatch):
+    # The upstream completion remains an explicit fixture. The actual model
+    # handler, bounded TCP transport, worker, signatures and PostgreSQL are real.
+    from engineering_agent.model_http_server import ModelHttpServer
+    from engineering_agent.selfhosted_model import ModelSettings, RealCodingModelService, model_http_handler
+
+    h = Harness(tmp_path, monkeypatch)
+    prepare(h, database)
+    class Storage(Counterparties):
+        def request(self, request, *, timeout_seconds, max_response_bytes, checkpoint):
+            checkpoint()
+            assert request.get_method() == "PUT"
+            self.content = request.data
+            self.sha256 = hashlib.sha256(self.content).hexdigest()
+            plan = json.loads(self.content)
+            assert plan["schema_version"] == "dop.v1" and plan["operations"][0]["content"]["data"] == "VALUE = 42\n"
+            self.uploads.append(request)
+            return HttpResponse(200, b"")
+    peers = Storage(h)
+    monkeypatch.setattr("foundry_runner.control_plane_http.urlopen", peers.core)
+    class Upstream:
+        calls = 0
+        def complete(self, *, endpoint, token, payload, timeout_seconds):
+            self.calls += 1
+            assert endpoint == "http://127.0.0.1:8000/v1/chat/completions"
+            return {"model": payload["model"], "choices": [{"finish_reason": "stop", "message": {
+                "role": "assistant", "content": json.dumps({"files": [{"path": "src/app.py", "content": "VALUE = 42\n"}]})}}],
+                "usage": {"prompt_tokens": 64, "completion_tokens": 24, "total_tokens": 88}}
+    upstream = Upstream()
+    secret = "runner_fixture_" + "a" * 40
+    settings = ModelSettings(model_id="isolated-model-interface-fixture", upstream_url="http://127.0.0.1:8000/v1/chat/completions",
+        upstream_api_key="upstream_fixture_" + "b" * 40, runner_api_key=secret, policy_sha256="a" * 64,
+        journal_path=tmp_path / "inference-journal.db", price_input_per_million_microusd=100000,
+        price_output_per_million_microusd=100000, max_output_tokens=h.config.max_output_tokens)
+    server = ModelHttpServer(("127.0.0.1", 0), model_http_handler(RealCodingModelService(settings, inference=upstream)))
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        provider = LocalExecutionProvider(endpoint=f"http://127.0.0.1:{server.server_address[1]}", token_supplier=lambda: secret)
+        worker = build_core_artifact_worker(
+            binding=h.config, core_origin="https://core.example.test", core_token_supplier=lambda: "service-fixture-secret",
+            admissions=h.admissions, package=h.package, artifact_bytes=h.bytes,
+            policy=ArtifactWorkPolicy("pol_worker-acceptance.v1", "a" * 64, "AT"), signers=[h.signer],
+            state_path=tmp_path / "runtime-model.db", connection_factory=database, license_id="license_worker-acceptance",
+            provider=provider, upload_egress_policy=EgressPolicy(frozenset({"storage.example.test"})),
+            upload_transport=peers, clock=lambda: h.now,
+        )
+        assert worker.run_once()
+        assert upstream.calls == len(peers.uploads) == 1
+        assert peers.events[-1]["outcome"] == "completed"
+        with database() as db:
+            row = db.execute("SELECT provider_id,actual_total_microusd,input_tokens,output_tokens FROM foundry_spend_settlement").fetchone()
+            assert row == ("foundry-selfhosted", 10, 64, 24)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
+        assert not thread.is_alive()
