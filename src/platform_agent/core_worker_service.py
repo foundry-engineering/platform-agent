@@ -99,8 +99,8 @@ def load_worker(profile_path: Path) -> ExecutionWorker:
         if not isinstance(entry, dict) or set(entry) != {"kid", "privateKeyFile"}:
             raise WorkerConfigurationError("exact operational signer profile required")
         raw = base64.b64decode(private_file(entry["privateKeyFile"], maximum=128).strip(), validate=True)
-        key = Ed25519PrivateKey.from_private_bytes(raw)
-        signers.append(CoreWorkAuthoritySigner(entry["kid"], key.public_key().public_bytes_raw(), key.sign))
+        signing_key = Ed25519PrivateKey.from_private_bytes(raw)
+        signers.append(CoreWorkAuthoritySigner(entry["kid"], signing_key.public_key().public_bytes_raw(), signing_key.sign))
     if (not isinstance(data["uploadHosts"], list) or not data["uploadHosts"]
             or any(not isinstance(host, str) for host in data["uploadHosts"])):
         raise WorkerConfigurationError("explicit trusted upload hosts required")
@@ -127,6 +127,8 @@ def load_worker(profile_path: Path) -> ExecutionWorker:
         from psycopg.conninfo import conninfo_to_dict
         value = dsn()
         configured = conninfo_to_dict(value).get("options", "")
+        if not isinstance(configured, str):
+            raise WorkerConfigurationError("PostgreSQL options must be text")
         return psycopg.connect(value, connect_timeout=5,
             options=configured + " -c statement_timeout=10000 -c lock_timeout=5000")
     admissions = GovernedSkillAdmissionService(
