@@ -52,7 +52,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: foundry-engineering/foundry-runners
-          ref: d4e81a28b646eb218e3f3dc647e5f90eb9e56d6f
+          ref: 7d0b18da48948dc0a57b4ecf562a9dddd326e914
           token: ${{ secrets.FOUNDRY_CI_READ_TOKEN }}
           path: .integration/runner
           persist-credentials: false
@@ -76,7 +76,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: foundry-engineering/foundry-core
-          ref: 5348c8045a70ce9a22bdcbf53f4e673afbeba426
+          ref: b26c58f5804e94d16afb0c3cfbc086bf6900e907
           token: ${{ secrets.FOUNDRY_CI_READ_TOKEN }}
           path: .integration/core
           persist-credentials: false
