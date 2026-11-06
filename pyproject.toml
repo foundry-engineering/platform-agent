@@ -27,6 +27,7 @@ dev = [
 
 [project.scripts]
 platform-agent = "platform_agent.cli:app"
+foundry-artifact-worker = "platform_agent.core_worker_service:main"
 
 [tool.uv]
 package = true
