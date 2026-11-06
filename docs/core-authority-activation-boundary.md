@@ -37,3 +37,21 @@ is established by this boundary test.
 This adapter closes live Core verification for activation issuance. It does not
 provide a production tenant/admission database, private signing service, the full
 ExecutionAuthorizer composition, live model or overall Enterprise release approval.
+
+
+## Scoped one-use witness continuation
+
+WorkAccessWitnessIssuer preserves the exact professionally scoped context from
+its resolved activation after comparing the base tenant/project/cell/epoch/keyset
+to live state. It rechecks the current package admission and both upstream
+lifetimes before signing, denies a witness that would outlive its authority, and
+uses detached authority/activation/request snapshots across signing callbacks.
+
+Ten focused regressions cover the former scope loss, changed live context,
+expired/short activation, revoked package admission and callback mutation. The
+existing four-repository handoff now uses a canonical real signed Work Authority,
+actual persisted package admission, actual activation/witness issuance and Runner's
+actual one-use access gate. Eleven checks reject replay, changed requests,
+workspace/artifact/key substitution, expiry and revocation. The side effect and
+replay adapter are explicit single-process contract fixtures, not a paid provider
+or a distributed-production acceptance claim.
