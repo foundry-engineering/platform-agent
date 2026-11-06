@@ -12,7 +12,21 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: platform_ci
+          POSTGRES_PASSWORD: platform_ci_test_only
+          POSTGRES_DB: platform_authority_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U platform_ci -d platform_authority_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 15
     steps:
       - name: Checkout platform agent
         uses: actions/checkout@v4
@@ -32,13 +46,13 @@ jobs:
           uv sync --extra dev --locked
       - run: uv run python -m compileall -q src tests scripts
       - run: uv run ruff check .
-      - run: uv run mypy src
+      - run: uv run mypy src scripts/verify_live_core_authority.py
       - run: uv run pytest -q
       - name: Checkout coordinated runner
         uses: actions/checkout@v4
         with:
           repository: foundry-engineering/foundry-runners
-          ref: 54eef3c5797d2030818b0576ef463af5fda3d658
+          ref: 3d6491856354b732c7313b37ce0c8a536bb85308
           token: ${{ secrets.FOUNDRY_CI_READ_TOKEN }}
           path: .integration/runner
           persist-credentials: false
@@ -46,7 +60,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: foundry-engineering/foundry-registry
-          ref: 35b220530b08844bcdf525771b1452b67eacbe5f
+          ref: d2223b310c587afe61376e9a1eacb3f8ffc1def7
           token: ${{ secrets.FOUNDRY_CI_READ_TOKEN }}
           path: .integration/registry
           persist-credentials: false
@@ -56,4 +70,32 @@ jobs:
           MYPYPATH: ${{ github.workspace }}/.integration/runner/src
         run: |
           uv run mypy scripts/verify_registry_runner_contract.py
-          uv run python scripts/verify_registry_runner_contract.py --registry-root .integration/registry --registry-commit 35b220530b08844bcdf525771b1452b67eacbe5f
+          uv run python scripts/verify_registry_runner_contract.py --registry-root .integration/registry --registry-commit d2223b310c587afe61376e9a1eacb3f8ffc1def7
+
+      - name: Checkout verified Core application
+        uses: actions/checkout@v4
+        with:
+          repository: foundry-engineering/foundry-core
+          ref: ebffbc76f586ac0286764a66163cb2febc778df4
+          token: ${{ secrets.FOUNDRY_CI_READ_TOKEN }}
+          path: .integration/core
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install Core private-storage runtime
+        working-directory: .integration/core
+        run: uv sync --locked --extra storage
+      - name: Build actual Core application
+        working-directory: .integration/core/platform-ui
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run build
+      - name: Actual Core and Platform authority over HTTPS and PostgreSQL
+        working-directory: .integration/core/platform-ui
+        env:
+          DATABASE_URL: postgres://platform_ci:platform_ci_test_only@127.0.0.1:5432/platform_authority_test
+          FOUNDRY_SCOPE_DB_TEST: '1'
+          FOUNDRY_CORE_AUTHORITY_PROBE: ${{ github.workspace }}/scripts/verify_live_core_authority.py
+          FOUNDRY_CORE_AUTHORITY_PYTHON: ${{ github.workspace }}/.venv/bin/python
+        run: npm run verify:runtime-http
