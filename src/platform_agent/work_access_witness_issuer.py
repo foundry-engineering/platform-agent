@@ -3,9 +3,13 @@ from __future__ import annotations
 import base64
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from agent_protocol.execution_scope import validate_scoped_tenant_context
+from agent_protocol.skill_activation import validate_skill_activation_at
+from agent_protocol.work_authority import validate_work_authority_at
 from agent_protocol.work_access_witness import (
     derive_work_access_witness_id,
     validate_work_access_witness_against_activation,
@@ -106,8 +110,8 @@ class WorkAccessWitnessIssuer:
         # an authority-epoch/keyset rotation therefore invalidates stale callers.
         context = self._admissions.current_context(tenant_id, project_id)
         try:
-            authority = dict(self._resolve_authority(work_authority_id))
-            activation = dict(self._resolve_activation(skill_activation_id))
+            authority = deepcopy(dict(self._resolve_authority(work_authority_id)))
+            activation = deepcopy(dict(self._resolve_activation(skill_activation_id)))
         except Exception as exc:
             raise WorkAccessWitnessIssuerError("live authority state could not be resolved") from exc
 
@@ -115,6 +119,45 @@ class WorkAccessWitnessIssuer:
             raise WorkAccessWitnessIssuerError("resolved Work Authority id does not match request")
         if activation.get("activation_id") != skill_activation_id:
             raise WorkAccessWitnessIssuerError("resolved Skill Activation id does not match request")
+
+        # Retain the exact signed professional execution scope. The live tenant
+        # service provides the base context, never a replacement for that scope.
+        # Recheck admission and both upstream lifetimes before calling a signer.
+        try:
+            validate_work_authority_at(authority, now=now)
+            validate_skill_activation_at(activation, now=now)
+            scoped_context = activation.get("tenant_context")
+            if not isinstance(scoped_context, dict):
+                raise ValueError("activation tenant context is unavailable")
+            if any(scoped_context.get(key) != value for key, value in context.as_dict().items()):
+                raise ValueError("activation differs from current tenant authority")
+            validate_scoped_tenant_context(
+                scoped_context, role_id=activation.get("role_id"), skill_id=activation.get("skill_id"),
+                skill_manifest_ref="sha256:" + str(activation.get("skill_contract_sha256")),
+            )
+            if authority.get("tenant_context") != scoped_context:
+                raise ValueError("authority and activation execution scopes differ")
+            admission = self._admissions.resolve(
+                tenant_id=tenant_id, project_id=project_id,
+                role_id=str(activation.get("role_id")), skill_id=str(activation.get("skill_id")),
+                package_id=str(activation.get("package_id")),
+            )
+            admission_bindings = {
+                "admission_id": admission.admission_id, "package_id": admission.package_id,
+                "skill_version": admission.skill_version,
+                "skill_contract_sha256": admission.skill_contract_sha256,
+                "artifact_digest": admission.artifact_digest,
+            }
+            if any(activation.get(key) != value for key, value in admission_bindings.items()):
+                raise ValueError("activation differs from current skill admission")
+            expires = now.astimezone(UTC) + timedelta(seconds=lifetime_seconds)
+            for upstream in (authority, activation):
+                end = datetime.fromisoformat(str(upstream["expires_at"]).replace("Z", "+00:00"))
+                if expires > end:
+                    raise ValueError("witness outlives its upstream authority")
+        except Exception as exc:
+            raise WorkAccessWitnessIssuerError("current scoped activation authority unavailable") from exc
+        request = deepcopy(dict(request))
 
         resource = request.get("resource")
         if not isinstance(resource, Mapping):
@@ -130,7 +173,7 @@ class WorkAccessWitnessIssuer:
         document: dict[str, object] = {
             "schema_version": "work-access-witness.v1",
             "witness_id": "",
-            "tenant_context": context.as_dict(),
+            "tenant_context": scoped_context,
             "work_authority_id": work_authority_id,
             "skill_activation_id": skill_activation_id,
             "run_id": activation.get("run_id"),

@@ -26,6 +26,11 @@ from agent_protocol.skill_package import (
     skill_package_signed_payload_sha256,
     skill_package_signing_message,
 )
+from agent_protocol.work_authority import (
+    derive_work_authority_id, validate_work_authority,
+    work_authority_signed_payload_sha256, work_authority_signing_message,
+)
+from foundry_runner.work_access_gate import InMemoryWitnessReplayStore, WorkAccessDenied, WorkAccessGate
 from foundry_runner.profession_assignment import ProfessionAssignmentError
 from foundry_runner.skill_runtime_gate import SkillRuntimeAdmissionError, admit_skill_launch
 from platform_agent.skill_activation_issuer import (
@@ -33,6 +38,9 @@ from platform_agent.skill_activation_issuer import (
     SkillActivationIssuerError,
     SkillActivationSigner,
     VerifiedExecutionScope,
+)
+from platform_agent.work_access_witness_issuer import (
+    WorkAccessWitnessIssuer, WorkAccessWitnessIssuerError, WorkAccessWitnessSigner,
 )
 from platform_agent.skill_admission import SQLiteSkillAdmissionStore
 from platform_agent.skill_admission_service import GovernedSkillAdmissionService
@@ -55,6 +63,8 @@ def denied(label: str, operation: Callable[[], object]) -> None:
         SkillActivationIssuerError,
         ProfessionAssignmentError,
         TenantNotActiveError,
+        WorkAccessDenied,
+        WorkAccessWitnessIssuerError,
     ):
         print("Contract check passed: " + label)
         return
@@ -165,9 +175,35 @@ def main() -> None:
             skill_id=skill["skill_id"],
             skill_manifest_ref="sha256:" + canonical_sha256(skill),
         )
-        authority = "wka_" + "a" * 32
         task = "tsk_" + "b" * 32
-        agent = "agent_contract.worker"
+        agent = "bookkeeper-worker"
+        request: dict[str, Any] = {
+            "tool_id": "finance.ledger-read", "connector_id": None,
+            "resource": {"resource_type": "business-record", "resource_id": "ledger:contract-test", "action": "read"},
+            "arguments": {"test_only": True},
+        }
+        scoped_context = {**service.current_context(record.tenant_id, record.project_id).as_dict(),
+                          "execution_scope": scope.as_dict()}
+        work_authority: dict[str, Any] = {
+            "schema_version": "work-authority.v1", "authority_id": "",
+            "tenant_context": scoped_context, "task_id": task, "agent_id": agent, "role_id": role["id"],
+            "request_sha256": canonical_sha256(request),
+            "policy_ref": {"policy_id": "contract-test.v1", "policy_sha256": "a" * 64,
+                           "jurisdiction": "AT", "constraints": []},
+            "issued_at": "2026-10-11T17:00:00Z", "expires_at": "2026-10-11T17:01:00Z",
+            "resources": [{"resource_type": "business-record", "resource_id": "ledger:contract-test",
+                           "actions": ["read"], "data_classification": "internal"}],
+            "tool_ids": [request["tool_id"]], "connector_ids": [],
+            "budget": {"max_model_calls": 1, "max_tool_calls": 1,
+                       "max_cost_microusd": 1, "max_wall_seconds": 60},
+            "approvals": [], "constraint_evidence": [], "regulated_reviews": [],
+        }
+        authority = derive_work_authority_id(work_authority)
+        work_authority["authority_id"] = authority
+        work_authority["signatures"] = [{"kid": "kid_authority-contract.v1", "alg": "ed25519",
+            "signed_sha256": work_authority_signed_payload_sha256(work_authority),
+            "sig_b64": base64.b64encode(key.sign(work_authority_signing_message(work_authority))).decode()}]
+        validate_work_authority(work_authority)
 
         def verify_authority(
             kind: str, identity: str, context: TenantContext, task_id: str, agent_id: str
@@ -226,6 +262,35 @@ def main() -> None:
         assert admitted.assignment.skill_manifest_ref == scope.skill_manifest_ref
         assert admitted.assignment.admission_id == record.admission_id
         print("Contract check passed: platform-issued activation accepted by actual runner")
+        witness_issuer = WorkAccessWitnessIssuer(
+            admissions=service, resolve_authority=lambda _: work_authority,
+            resolve_activation=lambda _: activation,
+        )
+        witness_signer = WorkAccessWitnessSigner(kid="kid_witness-contract.v1", public_key=public, sign=key.sign)
+
+        def issue_witness() -> dict[str, object]:
+            return witness_issuer.issue(tenant_id=record.tenant_id, project_id=record.project_id,
+                work_authority_id=authority, skill_activation_id=str(activation["activation_id"]),
+                invocation_id="inv_" + "d" * 32, request=request, signers=[witness_signer], now=now)
+
+        witness = issue_witness()
+        assert witness["tenant_context"] == admitted.assignment.tenant_context.as_dict()
+        effects: list[str] = []
+        access = WorkAccessGate(replay_store=InMemoryWitnessReplayStore(),
+                               trusted_keys={witness_signer.kid: public})
+        def fixture_read() -> str:
+            effects.append("fixture-read")
+            return "ok"
+
+        assert access.invoke(witness=witness, request=request, now=now, operation=fixture_read) == "ok"
+        assert effects == ["fixture-read"]
+        print("Contract check passed: Platform scoped witness accepted by actual Runner access gate")
+        denied("one-use witness replay rejected", lambda: access.invoke(
+            witness=witness, request=request, now=now, operation=lambda: effects.append("replay")))
+        denied("changed tool request rejected", lambda: access.invoke(
+            witness=witness, request={**request, "arguments": {"changed": True}},
+            now=now, operation=lambda: effects.append("changed")))
+        assert effects == ["fixture-read"]
         altered: dict[str, Any] = copy.deepcopy(activation)
         altered["tenant_context"]["execution_scope"]["workspace_id"] = "workspace_foreign"
         denied("signed workspace substitution rejected", lambda: launch(altered))
@@ -235,6 +300,8 @@ def main() -> None:
             "expired activation rejected",
             lambda: launch(activation, clock=now + timedelta(minutes=2)),
         )
+        service.revoke(record.admission_id, reason="Contract test revocation", now=now)
+        denied("revoked package cannot issue another witness", issue_witness)
         tenants.set_project_status(
             record.tenant_id, record.project_id, "suspended", reason="Test hold"
         )
@@ -257,7 +324,7 @@ def main() -> None:
             ),
         )
     print(
-        "Registry/Protocol/Platform/Runner contract integration: 7 checks passed; provider calls: 0"
+        "Registry/Protocol/Platform/Runner contract integration: 11 checks passed; provider calls: 0"
     )
 
 
