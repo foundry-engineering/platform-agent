@@ -12,6 +12,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+worker = [
+  "foundry-runners @ git+https://github.com/foundry-engineering/foundry-runners.git@bcad6565737effdfcfbd8e769d2d2a2392723056",
+]
 dev = [
   "pytest>=9",
   "ruff>=0.15",

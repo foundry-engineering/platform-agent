@@ -43,19 +43,26 @@ jobs:
           test -n "${GIT_TOKEN}" || { echo "::error::FOUNDRY_CI_READ_TOKEN is not set"; exit 1; }
           echo "::add-mask::${GIT_TOKEN}"
           git config --global url."https://x-access-token:${GIT_TOKEN}@github.com/".insteadOf "https://github.com/"
-          uv sync --extra dev --locked
+          uv sync --extra dev --extra worker --locked
       - run: uv run python -m compileall -q src tests scripts
       - run: uv run ruff check .
       - run: uv run mypy src scripts/verify_live_core_authority.py
-      - run: uv run pytest -q
       - name: Checkout coordinated runner
         uses: actions/checkout@v4
         with:
           repository: foundry-engineering/foundry-runners
-          ref: 7d0b18da48948dc0a57b4ecf562a9dddd326e914
+          ref: bcad6565737effdfcfbd8e769d2d2a2392723056
           token: ${{ secrets.FOUNDRY_CI_READ_TOKEN }}
           path: .integration/runner
           persist-credentials: false
+      - name: Concrete worker and ordinary Platform acceptance
+        run: uv run pytest tests -q --ignore=tests/test_postgres_artifact_worker.py
+      - name: Actual PostgreSQL worker issuance and six budget scopes
+        env:
+          FOUNDRY_PLATFORM_PG_TEST: '1'
+          FOUNDRY_PLATFORM_TEST_DATABASE_URL: postgres://platform_ci:platform_ci_test_only@127.0.0.1:5432/platform_authority_test
+          FOUNDRY_RUNNER_SOURCE_ROOT: ${{ github.workspace }}/.integration/runner
+        run: uv run pytest tests/test_postgres_artifact_worker.py -vv
       - name: Checkout coordinated registry
         uses: actions/checkout@v4
         with:
