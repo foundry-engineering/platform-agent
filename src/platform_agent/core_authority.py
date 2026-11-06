@@ -11,9 +11,14 @@ import ssl
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from http.client import HTTPSConnection
 from typing import Any
 from urllib.parse import quote, urlsplit
+
+from agent_protocol.core_work_request import (
+    core_work_request_material, validate_work_authority_core_request,
+)
 
 from platform_agent.skill_activation_issuer import VerifiedExecutionScope
 from platform_agent.tenant_control import TenantContext
@@ -184,19 +189,51 @@ class CoreAuthorityClient:
 class CoreAuthorityVerifier:
     """Direct callback for SkillActivationIssuer.verify_authority_binding."""
 
-    def __init__(self, *, client: CoreAuthorityClient, binding: ClaimedCoreAuthority) -> None:
+    def __init__(
+        self, *, client: CoreAuthorityClient, binding: ClaimedCoreAuthority,
+        resolve_work_authority: Callable[[str], Mapping[str, Any]] | None = None,
+        trusted_work_authority_keys: Mapping[str, bytes] | None = None,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
+        if ((resolve_work_authority is None) != (trusted_work_authority_keys is None)
+                or (trusted_work_authority_keys is not None and not trusted_work_authority_keys)):
+            raise ValueError("signed Core binding needs a resolver and trusted authority keys")
         self._client, self._binding = client, binding
+        self._resolve_work_authority = resolve_work_authority
+        self._authority_keys = dict(trusted_work_authority_keys or {})
+        self._clock = clock or (lambda: datetime.now(UTC))
 
     def __call__(
         self, authority_class: str, authority_id: str, context: TenantContext,
         task_id: str, agent_id: str,
     ) -> VerifiedExecutionScope:
         binding = self._binding
-        if (authority_class != "work-authority" or authority_id != binding.authority_id
+        if (authority_class != "work-authority"
                 or context.tenant_id != binding.tenant_id or context.project_id != binding.project_id
-                or context.authority_epoch != binding.authority_epoch
-                or task_id != binding.work_node_id or agent_id != binding.agent_id):
+                or context.authority_epoch != binding.authority_epoch):
             raise CoreAuthorityError("activation request differs from the claimed Core job")
+        if self._resolve_work_authority is None:
+            if (authority_id != binding.authority_id
+                    or task_id != binding.work_node_id or agent_id != binding.agent_id):
+                raise CoreAuthorityError("activation request differs from the claimed Core job")
+        else:
+            try:
+                request = core_work_request_material(
+                    tenant_context={**context.as_dict(), "execution_scope": binding.scope.as_dict()},
+                    execution_job_id=binding.execution_job_id, work_node_id=binding.work_node_id,
+                    core_authority_ref=binding.authority_id, core_agent_ref=binding.agent_id,
+                    task_id=task_id, agent_id=agent_id, professional_role=binding.professional_role,
+                    provider_budget_microusd=binding.provider_budget_microusd,
+                    allowed_actions=binding.allowed_actions,
+                )
+                authority = validate_work_authority_core_request(
+                    self._resolve_work_authority(authority_id), request,
+                    trusted_keys=self._authority_keys, now=self._clock(),
+                )
+                if authority["authority_id"] != authority_id:
+                    raise CoreAuthorityError("resolved authority identity changed")
+            except Exception:
+                raise CoreAuthorityError("signed canonical authority does not bind this Core job") from None
         response = self._client.read(binding)
         expected = {
             "schemaVersion": "foundry.core-runtime-authority.v1",
