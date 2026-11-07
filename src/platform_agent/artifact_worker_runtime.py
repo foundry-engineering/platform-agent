@@ -39,6 +39,10 @@ def build_core_artifact_worker(
     provider: HttpExecutionProvider, upload_egress_policy: EgressPolicy,
     clock: Callable[[], datetime] | None = None, core_ssl_context: ssl.SSLContext | None = None,
     upload_transport: HttpTransport | None = None,
+    control: ControlPlaneHttpClient | None = None,
+    session_envelope: Mapping[str, Any] | None = None,
+    task_id: str | None = None, invocation_tag: str | None = None,
+    reservation_ceiling_microusd: int | None = None,
 ) -> ExecutionWorker:
     """No memory stores, automatic budget provisioning or default signing keys.
 
@@ -48,6 +52,8 @@ def build_core_artifact_worker(
     renewal, external signer provisioning and package deployment.
     """
     now = clock or (lambda: datetime.now(UTC))
+    if control is not None and (control.tenant_id != binding.tenant_id or control.workspace_id != binding.workspace_id):
+        raise ValueError("shared Core claim client differs from configured worker scope")
     core = CoreAuthorityClient(origin=core_origin, token_supplier=core_token_supplier,
                                ssl_context=core_ssl_context)
     authorizer = CoreExecutionAuthorizer(
@@ -55,7 +61,9 @@ def build_core_artifact_worker(
         policy=policy, signers=signers, store=SQLiteArtifactExecutionStore(state_path),
         economics=PostgresArtifactBudgetRegistrar(connection_factory=connection_factory,
             tenant_id=binding.tenant_id, license_id=license_id, agent_id=binding.canonical_agent_id),
-        provider=provider, clock=now,
+        provider=provider, clock=now, session_envelope=session_envelope,
+        task_id=task_id, invocation_tag=invocation_tag,
+        reservation_ceiling_microusd=reservation_ceiling_microusd,
     )
     paid_gate = PaidInvocationGate(
         economic_gate=EconomicGate(reservation_store=PostgresEconomicReservationStore(connection_factory=connection_factory)),
@@ -67,8 +75,9 @@ def build_core_artifact_worker(
         ), clock=now,
     )
     return ExecutionWorker(
-        control=ControlPlaneHttpClient(base_url=core_origin, tenant_id=binding.tenant_id,
-            workspace_id=binding.workspace_id, token_supplier=core_token_supplier),
+        control=control or ControlPlaneHttpClient(base_url=core_origin, tenant_id=binding.tenant_id,
+            workspace_id=binding.workspace_id, token_supplier=core_token_supplier,
+            project_id=binding.project_id, agent_id=binding.core_agent_id),
         provider=provider, authorizer=authorizer, paid_gate=paid_gate,
         spend_ledger=PostgresSpendLedger(connection_factory=connection_factory),
         spend_reconciler=PostgresSpendReconciler(connection_factory=connection_factory),

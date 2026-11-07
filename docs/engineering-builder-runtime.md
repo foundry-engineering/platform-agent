@@ -40,10 +40,82 @@ rehashes reads. Artifacts, state and verification evidence must live outside the
 model workspace. Use the existing `DockerSandboxVerifier` with a reviewed image
 digest and fixed checks on an appropriately isolated worker.
 
-Native acceptance uses actual Ed25519 verification, SQLite tenant/reservation
-state, signed DOP writes, private artifact storage, replay rejection and negative
-scope/revocation cases. Its explicit model and economic counterparties remain
-fixtures. The mandatory Docker case exercises failing code, a checksum-bound
-repair, passing code and final private packaging through real containers. This
-does not establish deployed model inference or complete application-to-Runner
-job orchestration.
+## Core job execution
+
+`CoreBuilderWorker` claims the configured Core project, agent and work node. The
+Core job must match the pre-approved Builder task's tenant, project, goal and
+total model budget. A single shared cost envelope binds its immutable task and
+run IDs across all rounds. PostgreSQL registers the existing tenant, cell,
+project, workspace, assignment and run budget scopes. Each round reserves only
+its share of the total and gets a distinct signed invocation ID. The model
+service deduplicates that invocation, rather than suppressing a legitimate
+repair because it belongs to the same Core job.
+
+`CoreBuilderModel` is the concrete paid Runner adapter. It invokes the signed
+paid gate, records durable usage and settlement, uploads the returned DOP and
+requires the independent Core scanner before passing those bytes to the signed
+Builder executor. Fresh source hashes and independently generated verification
+feedback reach the next admitted model round. The job remains running during
+repair. Only the verified final ZIP is projected as its artifact and completion;
+its cost is the sum of actual settled rounds, without another model charge.
+
+The opaque Core workspace ID and the canonical `wsp_` code-workspace ID are
+separate configured identities. The mapping is anchored by the same immutable
+Builder task, tenant, project, cell, repository and signed code grant; neither
+workspace schema is relaxed. Source paths must be covered by both the grant's
+read and write capabilities before source disclosure. Model execution, uploads,
+verification and final publication all recheck the enclosing code grant,
+reservation, Core lease, revocation state and total deadline.
+
+## Operator entrypoint
+
+Install the pinned `worker` and `integration` extras and execute one approved job:
+
+```sh
+uv sync --extra worker --extra integration --locked
+uv run foundry-engineering-agent --profile /absolute/private/core-builder.json
+```
+
+The profile is an owner-only JSON file with schemaVersion
+`foundry.core-builder-profile.v1` and these exact fields:
+
+| Field | Required value |
+| --- | --- |
+| artifactWorkerProfileFile | Absolute path to the existing `foundry.artifact-worker-profile.v1` runtime profile; supplies Core and provider origins, private tokens, PostgreSQL connection, approved package, tenant stores, execution state and WorkAuthority signers. |
+| builderTaskFile | Absolute path to the approved serialized `BuilderTask`. |
+| tenantAdmissionFile | Absolute path to the existing `TenantSandboxAdmission.as_dict()` JSON, including the reservation and signed Execution Grant. |
+| grantTrustedKeysFile | Absolute path to a JSON map of approved grant key IDs to base64 Ed25519 public keys. |
+| workspaceSigners, witnessSigners | Lists of objects containing exactly `kid` and `privateKeyFile`; each file contains the base64 Ed25519 private seed for an existing operational signer. |
+| coreWorkNodeId | The exact approved Core work node. |
+| workspace | Absolute isolated code workspace. |
+| sourcePaths | Explicit list of permitted `src/` paths. |
+| stateDirectory | Existing private attempt-state directory outside the code workspace. |
+| artifactStoreRoot | Existing private tenant artifact-store directory outside the code workspace. |
+| verificationEvidenceDirectory | Existing private verification-evidence directory outside the code workspace. |
+| sandbox | A `TrustedSandboxProfile` object with a reviewed immutable image digest and fixed checks; each check contains `check_id` and `argv`. |
+| maximumSeconds | Integer session deadline from 30 through 1800 seconds. |
+
+Startup validates the existing signed code grant and canonical agent before
+claiming work. It creates no approvals, budgets, production signing keys or model
+credentials. Changing the runtime configuration during a session stops further
+dispatch. A process restart cannot replay a consumed code grant. Reconcile
+unknown provider outcomes and issue fresh approved authority before recovery.
+
+## Acceptance and deployment evidence
+
+Native CI exercises actual Ed25519 verification, tenant/reservation state,
+PostgreSQL budget accounting, paid dispatch, signed DOP execution, Core scanning
+and private ZIP delivery. The full session acceptance requires two metered model
+rounds, two settlements, a failed independent check, a successful Docker repair,
+three scanned uploads and exactly one final Core artifact/completion. Separate
+actual Core HTTPS/PostgreSQL tests reject mismatched project, agent and work-node
+selectors. Negative cases cover replay, scope, revocation and pre-provider
+cancellation.
+
+The test model server and Core/storage counterparties in the session test are
+explicit fixtures. Actual Core HTTP contracts and real Docker checks run in
+their own mandatory integration steps. These checks establish executable
+application-to-Runner orchestration; they are not evidence of deployed model
+weights or a live customer execution. Live operation requires the provisioned
+model service, real private profile/secrets, reviewed sandbox image and existing
+approved authority and budgets. Production code has no fixture-model fallback.

@@ -51,7 +51,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: foundry-engineering/foundry-runners
-          ref: bcad6565737effdfcfbd8e769d2d2a2392723056
+          ref: 31a77e646893c384e3324e78f67678579411c451
           token: ${{ secrets.FOUNDRY_CI_READ_TOKEN }}
           path: .integration/runner
           persist-credentials: false
@@ -65,13 +65,14 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: foundry-engineering/engineering-agent
-          ref: 5b2cf1cdbfb6d962e307d8c033c2f38ebc2a5331
+          ref: 98fec54b800d13e903695bfa9a8087674c297a3f
           token: ${{ secrets.FOUNDRY_CI_READ_TOKEN }}
           path: .integration/engineering
           persist-credentials: false
       - name: Actual PostgreSQL worker issuance and six budget scopes
         env:
           FOUNDRY_PLATFORM_PG_TEST: '1'
+          FOUNDRY_BUILDER_REAL_DOCKER: '1'
           FOUNDRY_PLATFORM_TEST_DATABASE_URL: postgres://platform_ci:platform_ci_test_only@127.0.0.1:5432/platform_authority_test
           FOUNDRY_RUNNER_SOURCE_ROOT: ${{ github.workspace }}/.integration/runner
         run: uv run pytest tests/test_postgres_artifact_worker.py -vv
@@ -95,7 +96,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: foundry-engineering/foundry-core
-          ref: b26c58f5804e94d16afb0c3cfbc086bf6900e907
+          ref: 09396ed9f42989b4293be218b073328f95f24973
           token: ${{ secrets.FOUNDRY_CI_READ_TOKEN }}
           path: .integration/core
           persist-credentials: false

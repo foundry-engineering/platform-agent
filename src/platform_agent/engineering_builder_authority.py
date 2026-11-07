@@ -9,10 +9,13 @@ from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from typing import Any
+import re
+from pathlib import PurePosixPath
 
 from agent_protocol.execution_grant import verify_execution_grant_signatures
 from engineering_agent.builder import BuilderBoundaryError, BuilderTask, SignedAdmission
 from engineering_agent.execution_gate import authorize_dop
+from engineering_agent.source_context import source_path
 
 from .runtime_authority import (
     AuthorityStateProvider, AuthorityWitnessSignerSet, issue_authority_witness,
@@ -34,7 +37,10 @@ class TenantBuilderAuthority:
         witness_signers: AuthorityWitnessSignerSet,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         lifetime_seconds: int = 60,
+        execution_checkpoint: Callable[[], None] | None = None,
     ) -> None:
+        if re.fullmatch(r"wsp_[a-f0-9]{32}", task.workspace_id) is None:
+            raise BuilderBoundaryError("canonical signed Builder workspace identity required")
         if type(lifetime_seconds) is not int or not 5 <= lifetime_seconds <= 60:
             raise ValueError("builder authority lifetime must be within 5..60 seconds")
         if not trusted_grant_keys or any(
@@ -55,6 +61,7 @@ class TenantBuilderAuthority:
         self._grant_keys = dict(trusted_grant_keys)
         self._workspace_signers, self._witness_signers = workspace, witness_signers
         self._clock, self._lifetime = clock, lifetime_seconds
+        self._execution_checkpoint = execution_checkpoint
         context = self._admission.tenant_context
         if (task.tenant_id != context.tenant_id or task.project_id != context.project_id
                 or task.cell_id != context.cell_id):
@@ -81,7 +88,16 @@ class TenantBuilderAuthority:
             raise BuilderBoundaryError("admitted Builder grant identity unavailable")
         return value
 
+    @property
+    def agent_id(self) -> str:
+        value = self._grant.get("agent_id")
+        if not isinstance(value, str):
+            raise BuilderBoundaryError("admitted Builder agent identity unavailable")
+        return value
+
     def checkpoint(self) -> None:
+        if self._execution_checkpoint is not None:
+            self._execution_checkpoint()
         verify_execution_grant_signatures(self._grant, self._grant_keys)
         snapshot = validate_admission_runtime_state(
             self._admission, authority_state=self._state,
@@ -95,6 +111,18 @@ class TenantBuilderAuthority:
         if value.tzinfo is None or value.utcoffset() is None:
             raise BuilderBoundaryError("trusted Builder clock must be timezone-aware")
         return value.astimezone(UTC)
+
+    def require_source_paths(self, paths: tuple[str, ...]) -> None:
+        self.checkpoint()
+        for key in ("read_paths", "write_paths"):
+            roots = self._grant.get(key)
+            if not isinstance(roots, list) or not all(isinstance(root, str) for root in roots):
+                raise BuilderBoundaryError("signed Builder file scope unavailable")
+            for value in paths:
+                path = PurePosixPath(source_path(value))
+                if not any(PurePosixPath(root) == PurePosixPath(".") or path == PurePosixPath(root)
+                           or path.is_relative_to(PurePosixPath(root)) for root in roots):
+                    raise BuilderBoundaryError("configured Builder source exceeds signed " + key)
 
     def issue(self, task: BuilderTask, plan: Mapping[str, Any]) -> SignedAdmission:
         if task != self._task:
