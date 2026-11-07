@@ -149,7 +149,7 @@ def _grant_in_admission(
     return matches[0]
 
 
-def _validate_admission_runtime_state(
+def validate_admission_runtime_state(
     admission: TenantSandboxAdmission,
     *,
     authority_state: AuthorityStateProvider,
@@ -247,7 +247,7 @@ def issue_authority_witness(
     if expires <= issued or expires - issued > timedelta(seconds=120):
         raise RuntimeAuthorityError("Authority Witness must have a positive lifetime <= 120 seconds")
 
-    current = _validate_admission_runtime_state(
+    current = validate_admission_runtime_state(
         admission,
         authority_state=authority_state,
         target_repository_id=repository_id,

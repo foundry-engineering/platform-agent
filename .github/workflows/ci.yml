@@ -55,13 +55,17 @@ jobs:
           token: ${{ secrets.FOUNDRY_CI_READ_TOKEN }}
           path: .integration/runner
           persist-credentials: false
-      - name: Concrete worker and ordinary Platform acceptance
+      - name: Pull reviewed image for signed Builder repair acceptance
+        run: docker pull docker.io/library/python@sha256:1b668429b3511ab407d8e00648891631b0b1a4d7e15e3ca70f38ab5b91ad4ab4
+      - name: Concrete worker and signed Builder private-delivery acceptance
+        env:
+          FOUNDRY_BUILDER_REAL_DOCKER: '1'
         run: uv run pytest tests -q --ignore=tests/test_postgres_artifact_worker.py
       - name: Checkout exact Engineering model service
         uses: actions/checkout@v4
         with:
           repository: foundry-engineering/engineering-agent
-          ref: 25c29699a80f9206dd8a38fbfcc7f1782d94bf72
+          ref: 5b2cf1cdbfb6d962e307d8c033c2f38ebc2a5331
           token: ${{ secrets.FOUNDRY_CI_READ_TOKEN }}
           path: .integration/engineering
           persist-credentials: false
