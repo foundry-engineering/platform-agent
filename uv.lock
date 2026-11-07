@@ -221,7 +221,7 @@ wheels = [
 [[package]]
 name = "engineering-agent"
 version = "0.1.0"
-source = { git = "https://github.com/foundry-engineering/engineering-agent.git?rev=5b2cf1cdbfb6d962e307d8c033c2f38ebc2a5331#5b2cf1cdbfb6d962e307d8c033c2f38ebc2a5331" }
+source = { git = "https://github.com/foundry-engineering/engineering-agent.git?rev=98fec54b800d13e903695bfa9a8087674c297a3f#98fec54b800d13e903695bfa9a8087674c297a3f" }
 dependencies = [
     { name = "pydantic" },
     { name = "pyyaml" },
@@ -253,7 +253,7 @@ provides-extras = ["dev"]
 [[package]]
 name = "foundry-runners"
 version = "0.1.0"
-source = { git = "https://github.com/foundry-engineering/foundry-runners.git?rev=bcad6565737effdfcfbd8e769d2d2a2392723056#bcad6565737effdfcfbd8e769d2d2a2392723056" }
+source = { git = "https://github.com/foundry-engineering/foundry-runners.git?rev=31a77e646893c384e3324e78f67678579411c451#31a77e646893c384e3324e78f67678579411c451" }
 dependencies = [
     { name = "agent-protocol" },
     { name = "psycopg", extra = ["binary"] },
@@ -475,8 +475,8 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "engineering-agent", marker = "extra == 'integration'", git = "https://github.com/foundry-engineering/engineering-agent.git?rev=5b2cf1cdbfb6d962e307d8c033c2f38ebc2a5331" },
-    { name = "foundry-runners", marker = "extra == 'worker'", git = "https://github.com/foundry-engineering/foundry-runners.git?rev=bcad6565737effdfcfbd8e769d2d2a2392723056" },
+    { name = "engineering-agent", marker = "extra == 'integration'", git = "https://github.com/foundry-engineering/engineering-agent.git?rev=98fec54b800d13e903695bfa9a8087674c297a3f" },
+    { name = "foundry-runners", marker = "extra == 'worker'", git = "https://github.com/foundry-engineering/foundry-runners.git?rev=31a77e646893c384e3324e78f67678579411c451" },
     { name = "agent-protocol", git = "https://github.com/foundry-engineering/agent-protocol.git?rev=0b15c1d71da86b0543cade03416f41907516f448" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.19" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9" },

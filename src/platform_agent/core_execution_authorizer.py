@@ -64,6 +64,9 @@ class CoreExecutionAuthorizer:
         policy: ArtifactWorkPolicy, signers: Sequence[CoreWorkAuthoritySigner],
         store: SQLiteArtifactExecutionStore, economics: CostEnvelopeRegistrar,
         provider: HttpExecutionProvider, clock: Callable[[], datetime] | None = None,
+        session_envelope: Mapping[str, Any] | None = None,
+        task_id: str | None = None, invocation_tag: str | None = None,
+        reservation_ceiling_microusd: int | None = None,
     ) -> None:
         validate_skill_package(dict(package))
         verify_skill_package_artifact(dict(package), artifact_bytes)
@@ -77,6 +80,19 @@ class CoreExecutionAuthorizer:
         self._keys = {signer.kid: signer.public_key for signer in signers}
         self._economics, self._provider = economics, provider
         self._clock = clock or (lambda: datetime.now(UTC))
+        if session_envelope is None:
+            if any(value is not None for value in (task_id, invocation_tag, reservation_ceiling_microusd)):
+                raise ValueError("Builder invocation options require one shared session envelope")
+        else:
+            import re
+            if (not isinstance(task_id, str) or re.fullmatch(r"tsk_[a-f0-9]{32,64}", task_id) is None
+                    or invocation_tag not in {"delivery", *("model-" + str(i) for i in range(1, 7))}
+                    or (reservation_ceiling_microusd is not None and (
+                        type(reservation_ceiling_microusd) is not int or reservation_ceiling_microusd < 1))):
+                raise ValueError("exact bounded Builder session invocation required")
+            validate_cost_envelope_at(dict(session_envelope), now=self._clock())
+        self._session = deepcopy(dict(session_envelope)) if session_envelope is not None else None
+        self._task_id, self._invocation_tag, self._ceiling = task_id, invocation_tag, reservation_ceiling_microusd
 
     @property
     def trusted_keys(self) -> dict[str, bytes]:
@@ -103,6 +119,9 @@ class CoreExecutionAuthorizer:
         job_key = canonical_sha256([b.tenant_id, job.workspace_id, job.id])
         digest = canonical_sha256({"job": asdict(job), "worker": asdict(b),
                                    "package_id": self._package["package_id"]})
+        if self._session is not None:
+            job_key = canonical_sha256([job_key, self._invocation_tag])
+            digest = canonical_sha256([digest, self._session, self._task_id, self._invocation_tag, self._ceiling])
         return job_key, digest, claimed
 
     def _admitted(
@@ -138,7 +157,8 @@ class CoreExecutionAuthorizer:
         if not fresh:
             return self._admitted(job, claimed, documents)
         try:
-            task_id, run_id = "tsk_" + key[:32], "run_" + key[:32]
+            task_id = self._task_id or "tsk_" + key[:32]
+            run_id = str(self._session["run_id"]) if self._session is not None else "run_" + key[:32]
             authority = CoreWorkAuthorityIssuer(
                 client=self._client, admissions=self._admissions, policy=self._policy, clock=self._clock,
             ).issue(binding=claimed, task_id=task_id, agent_id=self._binding.canonical_agent_id,
@@ -197,27 +217,41 @@ class CoreExecutionAuthorizer:
                            "max_output_tokens": self._binding.max_output_tokens, "premium_model_allowed": False},
             }
             envelope["cost_envelope_id"] = derive_cost_envelope_id(envelope)
+            if self._session is not None:
+                envelope = deepcopy(self._session)
+                if (envelope["tenant_context"] != assignment.tenant_context.as_dict()
+                        or envelope["run_id"] != assignment.run_id or envelope["task_id"] != assignment.task_id
+                        or envelope["agent_id"] != assignment.agent_id
+                        or envelope["limits"]["max_total_cost_microusd"] != job.provider_budget_microusd
+                        or envelope["limits"]["max_paid_invocations"] != self._policy.max_model_calls
+                        or self._invocation_tag == "delivery"):
+                    raise CoreExecutionAuthorizationError("shared Builder budget changed its exact admitted work")
             validate_cost_envelope_at(envelope, now=self._clock())
             # Registration creates only the approved envelope and its run/task
             # children. Shared platform/tenant/license/agent ceilings pre-exist.
             self._economics.register(envelope)
             self._admitted(job, claimed, documents)
             remaining = int((datetime.fromisoformat(expiry.replace("Z", "+00:00")) - self._clock()).total_seconds())
+            invocation_id = ("inv_" + canonical_sha256([self._session["run_id"], self._invocation_tag])[:32]
+                             if self._session is not None else "inv_" + key[:32])
             witness = WorkAccessWitnessIssuer(
                 admissions=self._admissions, resolve_authority=lambda _: authority,
                 resolve_activation=lambda _: activation,
             ).issue(
                 tenant_id=claimed.tenant_id, project_id=claimed.project_id,
                 work_authority_id=assignment.authority_id, skill_activation_id=assignment.skill_activation_id,
-                invocation_id="inv_" + key[:32], request=request,
+                invocation_id=invocation_id, request=request,
                 signers=[WorkAccessWitnessSigner(s.kid, s.public_key, s.sign) for s in self._signers],
                 now=self._clock(), lifetime_seconds=min(15, remaining),
             )
             self._admitted(job, claimed, documents)
+            ceiling = self._ceiling if self._ceiling is not None else job.provider_budget_microusd
+            if not 0 < ceiling <= job.provider_budget_microusd:
+                raise CoreExecutionAuthorizationError("Builder invocation exceeds the approved job ceiling")
             reservation = CostReservationRequest(
-                cost_envelope_id=str(envelope["cost_envelope_id"]), invocation_id="inv_" + key[:32],
-                estimated_total_microusd=job.provider_budget_microusd,
-                estimated_model_microusd=job.provider_budget_microusd, estimated_external_tool_microusd=0,
+                cost_envelope_id=str(envelope["cost_envelope_id"]), invocation_id=invocation_id,
+                estimated_total_microusd=ceiling,
+                estimated_model_microusd=ceiling, estimated_external_tool_microusd=0,
                 input_tokens=self._binding.max_input_tokens, max_output_tokens=self._binding.max_output_tokens,
             )
             self._store.transition(key, before="authorizing", after="authorized", documents={

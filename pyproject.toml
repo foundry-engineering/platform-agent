@@ -13,10 +13,10 @@ dependencies = [
 
 [project.optional-dependencies]
 integration = [
-  "engineering-agent @ git+https://github.com/foundry-engineering/engineering-agent.git@5b2cf1cdbfb6d962e307d8c033c2f38ebc2a5331",
+  "engineering-agent @ git+https://github.com/foundry-engineering/engineering-agent.git@98fec54b800d13e903695bfa9a8087674c297a3f",
 ]
 worker = [
-  "foundry-runners @ git+https://github.com/foundry-engineering/foundry-runners.git@bcad6565737effdfcfbd8e769d2d2a2392723056",
+  "foundry-runners @ git+https://github.com/foundry-engineering/foundry-runners.git@31a77e646893c384e3324e78f67678579411c451",
 ]
 dev = [
   "pytest>=9",
@@ -28,6 +28,7 @@ dev = [
 [project.scripts]
 platform-agent = "platform_agent.cli:app"
 foundry-artifact-worker = "platform_agent.core_worker_service:main"
+foundry-engineering-agent = "platform_agent.core_builder_service:main"
 
 [tool.uv]
 package = true

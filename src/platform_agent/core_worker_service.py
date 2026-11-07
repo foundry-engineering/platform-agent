@@ -13,14 +13,17 @@ import signal
 import stat
 import sys
 from collections.abc import Callable
+from collections.abc import Mapping
 from pathlib import Path
 from threading import Event
 from typing import Any
 
 import psycopg
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from agent_protocol.schema import canonical_sha256
 
 from foundry_runner.execution_provider import ExecutionWorker, HttpExecutionProvider, LocalExecutionProvider
+from foundry_runner.control_plane_http import ControlPlaneHttpClient
 from foundry_runner.network_egress import EgressPolicy
 
 from .artifact_worker_runtime import build_core_artifact_worker
@@ -78,7 +81,13 @@ def _secret(path: object) -> Callable[[], str]:
     return read
 
 
-def load_worker(profile_path: Path) -> ExecutionWorker:
+def load_worker(
+    profile_path: Path, *, model_context: Mapping[str, Any] | None = None,
+    control: ControlPlaneHttpClient | None = None,
+    session_envelope: Mapping[str, Any] | None = None, task_id: str | None = None,
+    invocation_tag: str | None = None, reservation_ceiling_microusd: int | None = None,
+    max_model_calls: int = 1,
+) -> ExecutionWorker:
     data = json.loads(private_file(str(profile_path), maximum=65536), object_pairs_hook=_unique_object)
     keys = {
         "schemaVersion", "tenantId", "projectId", "workspaceId", "coreAgentId", "professionalRole",
@@ -105,6 +114,8 @@ def load_worker(profile_path: Path) -> ExecutionWorker:
             or any(not isinstance(host, str) for host in data["uploadHosts"])):
         raise WorkerConfigurationError("explicit trusted upload hosts required")
     provider_token = _secret(data["providerTokenFile"])
+    invocation = ("inv_" + canonical_sha256([session_envelope["run_id"], invocation_tag])[:32]
+                  if session_envelope is not None and invocation_tag != "delivery" else None)
     if data["providerMode"] == "https":
         from urllib.parse import urlsplit
         host = urlsplit(data["providerOrigin"]).hostname
@@ -113,9 +124,14 @@ def load_worker(profile_path: Path) -> ExecutionWorker:
         provider: HttpExecutionProvider = HttpExecutionProvider(
             endpoint=data["providerOrigin"], token_supplier=provider_token,
             egress_policy=EgressPolicy(frozenset({host})), timeout_seconds=120,
+            model_context=model_context,
+            model_invocation_id=invocation,
+            provider_budget_ceiling_microusd=reservation_ceiling_microusd,
         )
     elif data["providerMode"] == "loopback":
-        provider = LocalExecutionProvider(endpoint=data["providerOrigin"], token_supplier=provider_token, timeout_seconds=120)
+        provider = LocalExecutionProvider(endpoint=data["providerOrigin"], token_supplier=provider_token,
+            timeout_seconds=120, model_context=model_context, model_invocation_id=invocation,
+            provider_budget_ceiling_microusd=reservation_ceiling_microusd)
     else:
         raise WorkerConfigurationError("provider mode must be explicitly https or loopback")
     for field in ("tenantStoreFile", "admissionStoreFile"):
@@ -141,10 +157,13 @@ def load_worker(profile_path: Path) -> ExecutionWorker:
             data["maxInputTokens"], data["maxOutputTokens"]),
         core_origin=data["coreOrigin"], core_token_supplier=_secret(data["coreTokenFile"]),
         admissions=admissions, package=package, artifact_bytes=artifact,
-        policy=ArtifactWorkPolicy(data["policyId"], data["policySha256"], data["jurisdiction"]),
+        policy=ArtifactWorkPolicy(data["policyId"], data["policySha256"], data["jurisdiction"],
+            max_model_calls=max_model_calls),
         signers=signers, state_path=Path(data["executionStateFile"]), connection_factory=connect,
         license_id=data["licenseId"], provider=provider,
         upload_egress_policy=EgressPolicy(frozenset(data["uploadHosts"])),
+        control=control, session_envelope=session_envelope, task_id=task_id,
+        invocation_tag=invocation_tag, reservation_ceiling_microusd=reservation_ceiling_microusd,
     )
 
 

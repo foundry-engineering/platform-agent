@@ -150,3 +150,27 @@ class Harness:
 
     def task_with(self, **changes):
         return replace(self.task, **changes)
+
+
+def link_core_code_authority(h, root):
+    """Separate canonical code workspace and Core record workspace; same approved task."""
+    code = Harness(root)
+    code.tenants = h.tenants
+    h.tenants.bind_repository(h.config.tenant_id, h.config.project_id, code.repo)
+    snapshot = h.tenants.snapshot(h.config.tenant_id, h.config.project_id, code.repo)
+    code.task = replace(code.task, tenant_id=h.config.tenant_id, project_id=h.config.project_id,
+        cell_id=snapshot.context.cell_id, goal=h.job.objective,
+        model_budget_microusd=h.job.provider_budget_microusd)
+    grant = {key: value for key, value in code.grant.items() if key != 'signatures'}
+    grant['tenant_context'] = snapshot.context.as_dict()
+    grant['agent_id'] = h.config.canonical_agent_id
+    grant['policy_ref'] = {**grant['policy_ref'], 'policy_sha256': 'a' * 64}
+    grant['grant_id'] = derive_execution_grant_id(grant)
+    code.grant = sign_execution_grant(grant, signers=(ExecutionGrantSigner('kid_builder-grant.v1',
+        code.grant_key.public_key().public_bytes_raw(), code.grant_key.sign),))
+    reservation = h.tenants.reserve_run(h.config.tenant_id, h.config.project_id, code.repo,
+        run_key=code.admission.dispatch.dispatch_id)
+    code.admission = replace(code.admission, tenant_context=snapshot.context,
+        reservation=reservation, tenant_snapshot_sha256=snapshot.snapshot_sha256, signed_grants=(code.grant,))
+    code.artifacts = ContentAddressedArtifactStore(root / 'tenant-artifacts', h.tenants)
+    return code

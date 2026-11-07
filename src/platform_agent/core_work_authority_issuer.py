@@ -35,6 +35,7 @@ class ArtifactWorkPolicy:
     policy_sha256: str
     jurisdiction: str
     lifetime_seconds: int = 120
+    max_model_calls: int = 1
 
     def __post_init__(self) -> None:
         for name, low, high in (("policy_id", 3, 128), ("jurisdiction", 2, 64)):
@@ -46,6 +47,8 @@ class ArtifactWorkPolicy:
             raise ValueError("trusted artifact policy requires its exact SHA-256")
         if type(self.lifetime_seconds) is not int or not 1 <= self.lifetime_seconds <= 120:
             raise ValueError("artifact authority lifetime must be within 120 seconds")
+        if type(self.max_model_calls) is not int or not 1 <= self.max_model_calls <= 6:
+            raise ValueError("artifact model calls must be within 1..6")
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,7 +153,7 @@ class CoreWorkAuthorityIssuer:
             "resources": [{"resource_type": "artifact", "resource_id": binding.artifact_id,
                            "actions": ["create"], "data_classification": "restricted"}],
             "tool_ids": ["foundry.provider.execute"], "connector_ids": [],
-            "budget": {"max_model_calls": 1, "max_tool_calls": 1,
+            "budget": {"max_model_calls": self._policy.max_model_calls, "max_tool_calls": self._policy.max_model_calls,
                        "max_cost_microusd": binding.provider_budget_microusd,
                        "max_wall_seconds": self._policy.lifetime_seconds},
             "approvals": [], "constraint_evidence": [], "regulated_reviews": [], "signatures": [],

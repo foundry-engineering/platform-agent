@@ -206,3 +206,150 @@ def test_worker_reaches_production_engineering_http_handler_and_accounts_for_its
         server.server_close()
         thread.join(timeout=3)
         assert not thread.is_alive()
+
+
+@pytest.mark.parametrize("sandbox", ["unit", "docker"])
+def test_core_builder_runs_two_paid_model_rounds_and_final_scanned_zip(database, tmp_path, monkeypatch, sandbox):
+    """Actual full runtime wiring. Only Core/storage and upstream weights are fixtures."""
+    import io
+    import zipfile
+    from dataclasses import replace
+    from agent_protocol.execution_grant import derive_execution_grant_id
+    from engineering_agent.model_http_server import ModelHttpServer
+    from engineering_agent.selfhosted_model import ModelSettings, RealCodingModelService, model_http_handler
+    from engineering_agent.sandbox_verifier import DockerSandboxVerifier, TrustedCheck, TrustedSandboxProfile
+    from foundry_runner.control_plane_http import ControlPlaneHttpClient
+    from platform_agent.artifact_store import ContentAddressedArtifactStore
+    from platform_agent.core_builder_runtime import CoreBuilderConfiguration, CoreBuilderWorker
+    from platform_agent.grant_signing import ExecutionGrantSigner, sign_execution_grant
+    from builder_runtime_fixture import Harness as CodeHarness, IMAGE
+    if sandbox == "docker" and os.environ.get("FOUNDRY_BUILDER_REAL_DOCKER") != "1":
+        pytest.skip("actual Docker execution is mandatory in native integration")
+    h = Harness(tmp_path, monkeypatch)
+    prepare(h, database)
+    h.job = replace(h.job, objective="Build a function returning 42")
+    code_root = tmp_path / "builder"
+    code_root.mkdir(mode=0o700)
+    code = CodeHarness(code_root)
+    code.tenants = h.tenants
+    h.tenants.bind_repository(h.config.tenant_id, h.config.project_id, code.repo)
+    snapshot = h.tenants.snapshot(h.config.tenant_id, h.config.project_id, code.repo)
+    code.task = replace(code.task, tenant_id=h.config.tenant_id, project_id=h.config.project_id,
+        cell_id=snapshot.context.cell_id,
+        goal=h.job.objective, model_budget_microusd=h.job.provider_budget_microusd)
+    grant = {key: value for key, value in code.grant.items() if key != "signatures"}
+    grant["tenant_context"] = snapshot.context.as_dict()
+    grant["agent_id"] = h.config.canonical_agent_id
+    grant["policy_ref"] = {**grant["policy_ref"], "policy_sha256": "a" * 64}
+    grant["grant_id"] = derive_execution_grant_id(grant)
+    code.grant = sign_execution_grant(grant, signers=(ExecutionGrantSigner("kid_builder-grant.v1",
+        code.grant_key.public_key().public_bytes_raw(), code.grant_key.sign),))
+    reservation = h.tenants.reserve_run(h.config.tenant_id, h.config.project_id, code.repo,
+        run_key=code.admission.dispatch.dispatch_id)
+    code.admission = replace(code.admission, tenant_context=snapshot.context,
+        reservation=reservation, tenant_snapshot_sha256=snapshot.snapshot_sha256,
+        signed_grants=(code.grant,))
+    code.artifacts = ContentAddressedArtifactStore(code_root / "tenant-artifacts", h.tenants)
+    class Peers(Counterparties):
+        def __init__(self, h):
+            super().__init__(h)
+            self.objects = {}
+        def core(self, request, *, timeout):
+            if request.full_url.endswith('/outputs'):
+                from worker_counterparties import Response
+                body = json.loads(request.data)
+                identity = 'output_builder_' + str(len(self.objects) + 1)
+                self.current = identity
+                self.objects[identity] = {**body}
+                return Response({'objectId': identity, 'objectKey': 'private/' + identity,
+                    'uploadUrl': 'https://storage.example.test/private/' + identity, 'headers': {}})
+            if '/outputs/' in request.full_url:
+                from worker_counterparties import Response
+                identity = request.full_url.rsplit('/', 1)[1]
+                return Response({'objectId': identity, 'contentRef': 'object:private/' + identity,
+                    'sha256': self.objects[identity]['sha256'], 'status': 'available', 'scanStatus': 'clean',
+                    'scanRef': 'scan:' + identity} if request.get_method() == 'GET' else {'status': 'quarantined'})
+            return super().core(request, timeout=timeout)
+        def request(self, request, *, timeout_seconds, max_response_bytes, checkpoint):
+            checkpoint()
+            assert request.get_method() == 'PUT'
+            assert hashlib.sha256(request.data).hexdigest() == self.objects[self.current]['sha256']
+            self.objects[self.current]['content'] = request.data
+            self.uploads.append(request)
+            return HttpResponse(200, b'')
+    peers = Peers(h)
+    monkeypatch.setattr('foundry_runner.control_plane_http.urlopen', peers.core)
+    class InferenceFixture:
+        calls = 0
+        def complete(self, *, endpoint, token, payload, timeout_seconds):
+            self.calls += 1
+            prompt = payload['messages'][1]['content']
+            context = json.loads(prompt.split('Task data (JSON):\n')[1])
+            source = context['sourceContext'][0]
+            file = {'path': source['path'], 'content': 'def main():\n    return ' + ('0' if self.calls == 1 else '42') + '\n'}
+            if source['sha256'] is not None:
+                file['expectedSha256'] = source['sha256']
+                assert context['verificationFeedback']
+            return {'model': payload['model'], 'choices': [{'finish_reason': 'stop',
+                'message': {'content': json.dumps({'files': [file]})}}],
+                'usage': {'prompt_tokens': 64, 'completion_tokens': 24, 'total_tokens': 88}}
+    inference = InferenceFixture()
+    secret = 'builder_runner_' + 'r' * 40
+    settings = ModelSettings(model_id='core-builder-inference-fixture', upstream_url='http://127.0.0.1:8000/v1/chat/completions',
+        upstream_api_key='builder_upstream_' + 'u' * 40, runner_api_key=secret, policy_sha256='a' * 64,
+        journal_path=tmp_path / 'core-builder-inference.db', price_input_per_million_microusd=100000,
+        price_output_per_million_microusd=100000, max_output_tokens=h.config.max_output_tokens)
+    server = ModelHttpServer(('127.0.0.1', 0), model_http_handler(RealCodingModelService(settings, inference=inference)))
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    control = ControlPlaneHttpClient(base_url='https://core.example.test', tenant_id=h.config.tenant_id,
+        workspace_id=h.config.workspace_id, token_supplier=lambda: 'service-fixture-secret',
+        project_id=h.config.project_id, agent_id=h.config.core_agent_id, work_node_id=h.job.work_node_id)
+    def factory(context, tag, ceiling, envelope):
+        from agent_protocol.schema import canonical_sha256
+        invocation = 'inv_' + canonical_sha256([envelope['run_id'], tag])[:32]
+        provider = LocalExecutionProvider(endpoint=f'http://127.0.0.1:{server.server_address[1]}', token_supplier=lambda: secret,
+            model_context=context or None, model_invocation_id=invocation if tag != 'delivery' else None,
+            provider_budget_ceiling_microusd=ceiling)
+        return build_core_artifact_worker(binding=h.config, core_origin='https://core.example.test',
+            core_token_supplier=lambda: 'service-fixture-secret', admissions=h.admissions, package=h.package,
+            artifact_bytes=h.bytes, policy=ArtifactWorkPolicy('pol_worker-acceptance.v1', 'a' * 64, 'AT', max_model_calls=code.task.max_rounds),
+            signers=[h.signer], state_path=tmp_path / 'core-builder-state.db', connection_factory=database,
+            license_id='license_worker-acceptance', provider=provider, upload_egress_policy=EgressPolicy(frozenset({'storage.example.test'})),
+            upload_transport=peers, clock=lambda: h.now, control=control, session_envelope=envelope,
+            task_id=code.task.task_id, invocation_tag=tag, reservation_ceiling_microusd=ceiling)
+    tests = code.workspace / 'tests'
+    tests.mkdir(mode=0o755)
+    (tests / 'test_app.py').write_text("import sys,unittest\nsys.path.insert(0,'/workspace/src')\nfrom app import main\nclass App(unittest.TestCase):\n def test_main(self): self.assertEqual(main(),42)\n")
+    evidence = tmp_path / 'core-builder-docker-evidence'
+    evidence.mkdir(mode=0o700)
+    verifier = DockerSandboxVerifier(workspace=code.workspace, evidence_dir=evidence,
+        profile=TrustedSandboxProfile(image=IMAGE, checks=(TrustedCheck('python-unittest',
+            ('/usr/local/bin/python','-B','-m','unittest','discover','-s','/workspace/tests')),)))
+    if sandbox == 'unit':
+        verifier = code.verifier
+    try:
+        worker = CoreBuilderWorker(control=control,
+            configuration=CoreBuilderConfiguration(code.task, h.config, h.job.work_node_id,
+                ('src/app.py',), code.workspace, code.state),
+            authority_factory=lambda check: code.authority(execution_checkpoint=check), worker_factory=factory,
+            verifier=verifier, artifacts=code.artifacts,
+            tenant_context=lambda: h.admissions.current_context(h.config.tenant_id,h.config.project_id),
+            skill_id=h.package['skill_id'], skill_contract_sha256=h.package['skill_contract_sha256'], clock=lambda: h.now)
+        assert worker.run_once()
+        assert inference.calls == 2 and len(peers.uploads) == 3
+        assert len([x for x in peers.events if x.get('type') == 'artifact']) == 1
+        assert peers.events[-1]['outcome'] == 'completed'
+        content = peers.objects['output_builder_3']['content']
+        archive = zipfile.ZipFile(io.BytesIO(content))
+        assert b'return 42' in archive.read('src/app.py')
+        manifest = json.loads(archive.read('builder-result.json'))
+        assert manifest['actual_model_microusd'] == 20
+        with database() as db:
+            assert db.execute('SELECT count(*),sum(actual_total_microusd) FROM foundry_spend_settlement').fetchone() == (2, 20)
+            assert db.execute('SELECT count(*) FROM foundry_waw_invocation_claim').fetchone() == (2,)
+            assert db.execute("SELECT reserved_paid_invocations FROM foundry_budget_scope WHERE scope_type='task'").fetchone() == (2,)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)

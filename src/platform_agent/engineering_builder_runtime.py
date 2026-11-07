@@ -121,6 +121,7 @@ class TenantBuilderRuntime:
         if artifacts.root == root or artifacts.root.is_relative_to(root):
             raise BuilderBoundaryError("private Builder artifacts must be outside the workspace")
         context = ScopedSourceContext(root, source_paths)
+        authority.require_source_paths(source_paths)
         self._state = _private_directory(state_directory, root)
         self._authority, self._workspace = authority, root
         self._context, self._artifacts = context, artifacts
