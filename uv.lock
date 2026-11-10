@@ -221,7 +221,7 @@ wheels = [
 [[package]]
 name = "engineering-agent"
 version = "0.1.0"
-source = { git = "https://github.com/foundry-engineering/engineering-agent.git?rev=98fec54b800d13e903695bfa9a8087674c297a3f#98fec54b800d13e903695bfa9a8087674c297a3f" }
+source = { git = "https://github.com/foundry-engineering/engineering-agent.git?rev=19860f29f896e0cccc50be9a007c7089a22761d5#19860f29f896e0cccc50be9a007c7089a22761d5" }
 dependencies = [
     { name = "pydantic" },
     { name = "pyyaml" },
@@ -475,7 +475,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "engineering-agent", marker = "extra == 'integration'", git = "https://github.com/foundry-engineering/engineering-agent.git?rev=98fec54b800d13e903695bfa9a8087674c297a3f" },
+    { name = "engineering-agent", marker = "extra == 'integration'", git = "https://github.com/foundry-engineering/engineering-agent.git?rev=19860f29f896e0cccc50be9a007c7089a22761d5" },
     { name = "foundry-runners", marker = "extra == 'worker'", git = "https://github.com/foundry-engineering/foundry-runners.git?rev=31a77e646893c384e3324e78f67678579411c451" },
     { name = "agent-protocol", git = "https://github.com/foundry-engineering/agent-protocol.git?rev=0b15c1d71da86b0543cade03416f41907516f448" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.19" },
