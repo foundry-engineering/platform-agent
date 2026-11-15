@@ -316,31 +316,30 @@ def test_core_builder_runs_metered_model_and_final_scanned_zip(database, tmp_pat
                 'usage': {'prompt_tokens': 64, 'completion_tokens': 24, 'total_tokens': 88}}
     inference = InferenceFixture()
     secret = 'builder_runner_' + 'r' * 40
+    server, thread = None, None
     if live:
         from live_coding_model import MODEL_ID
 
-        endpoint, upstream_token = request.getfixturevalue("live_coding_runtime")
+        provider_origin, secret = request.getfixturevalue("live_coding_runtime")
         model_id = MODEL_ID
     else:
-        endpoint = "http://127.0.0.1:8000/v1/chat/completions"
-        upstream_token = "builder_upstream_" + "u" * 40
         model_id = "core-builder-inference-fixture"
-    settings = ModelSettings(model_id=model_id, upstream_url=endpoint,
-        upstream_api_key=upstream_token, runner_api_key=secret, policy_sha256='a' * 64,
-        journal_path=tmp_path / 'core-builder-inference.db', price_input_per_million_microusd=100000,
-        price_output_per_million_microusd=100000, max_output_tokens=h.config.max_output_tokens,
-        timeout_seconds=110 if live else 90)
-    service = RealCodingModelService(settings) if live else RealCodingModelService(settings, inference=inference)
-    server = ModelHttpServer(('127.0.0.1', 0), model_http_handler(service))
-    thread = Thread(target=server.serve_forever, daemon=True)
-    thread.start()
+        settings = ModelSettings(model_id=model_id, upstream_url="http://127.0.0.1:8000/v1/chat/completions",
+            upstream_api_key="builder_upstream_" + "u" * 40, runner_api_key=secret, policy_sha256='a' * 64,
+            journal_path=tmp_path / 'core-builder-inference.db', price_input_per_million_microusd=100000,
+            price_output_per_million_microusd=100000, max_output_tokens=h.config.max_output_tokens)
+        service = RealCodingModelService(settings, inference=inference)
+        server = ModelHttpServer(('127.0.0.1', 0), model_http_handler(service))
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        provider_origin = f"http://127.0.0.1:{server.server_address[1]}"
     control = ControlPlaneHttpClient(base_url='https://core.example.test', tenant_id=h.config.tenant_id,
         workspace_id=h.config.workspace_id, token_supplier=lambda: 'service-fixture-secret',
         project_id=h.config.project_id, agent_id=h.config.core_agent_id, work_node_id=h.job.work_node_id)
     def factory(context, tag, ceiling, envelope):
         from agent_protocol.schema import canonical_sha256
         invocation = 'inv_' + canonical_sha256([envelope['run_id'], tag])[:32]
-        provider = LocalExecutionProvider(endpoint=f'http://127.0.0.1:{server.server_address[1]}', token_supplier=lambda: secret,
+        provider = LocalExecutionProvider(endpoint=provider_origin, token_supplier=lambda: secret,
             timeout_seconds=120, model_context=context or None, model_invocation_id=invocation if tag != 'delivery' else None,
             provider_budget_ceiling_microusd=ceiling)
         return build_core_artifact_worker(binding=h.config, core_origin='https://core.example.test',
@@ -438,7 +437,8 @@ class OrderTotals(unittest.TestCase):
             assert db.execute('SELECT count(*) FROM foundry_waw_invocation_claim').fetchone() == (rounds,)
             assert db.execute("SELECT reserved_paid_invocations FROM foundry_budget_scope WHERE scope_type='task'").fetchone() == (rounds,)
     finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=3)
-        assert not thread.is_alive()
+        if server is not None and thread is not None:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=3)
+            assert not thread.is_alive()
