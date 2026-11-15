@@ -51,7 +51,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: foundry-engineering/foundry-runners
-          ref: 31a77e646893c384e3324e78f67678579411c451
+          ref: 66f3bad6600b91d3e72653069b77d0ae79e67119
           token: ${{ secrets.FOUNDRY_CI_READ_TOKEN }}
           path: .integration/runner
           persist-credentials: false
@@ -61,14 +61,6 @@ jobs:
         env:
           FOUNDRY_BUILDER_REAL_DOCKER: '1'
         run: uv run pytest tests -q --ignore=tests/test_postgres_artifact_worker.py
-      - name: Checkout exact Engineering model service
-        uses: actions/checkout@v4
-        with:
-          repository: foundry-engineering/engineering-agent
-          ref: 98fec54b800d13e903695bfa9a8087674c297a3f
-          token: ${{ secrets.FOUNDRY_CI_READ_TOKEN }}
-          path: .integration/engineering
-          persist-credentials: false
       - name: Actual PostgreSQL worker issuance and six budget scopes
         env:
           FOUNDRY_PLATFORM_PG_TEST: '1'
@@ -76,6 +68,34 @@ jobs:
           FOUNDRY_PLATFORM_TEST_DATABASE_URL: postgres://platform_ci:platform_ci_test_only@127.0.0.1:5432/platform_authority_test
           FOUNDRY_RUNNER_SOURCE_ROOT: ${{ github.workspace }}/.integration/runner
         run: uv run pytest tests/test_postgres_artifact_worker.py -vv
+      - name: Fetch checksum-pinned coding model and CPU runtime
+        if: github.event_name != 'push'
+        shell: bash
+        run: |
+          assets="$RUNNER_TEMP/foundry-coding-model"
+          install -d -m 700 "$assets"
+          cd "$assets"
+          curl --fail --silent --show-error --location --retry 2 --retry-max-time 390 --max-time 360 \
+            --output qwen2.5-coder-7b-instruct-q4_k_m.gguf \
+            https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct-GGUF/resolve/13fb94bfda8c8cf22497dc57b78f391a9acb426a/qwen2.5-coder-7b-instruct-q4_k_m.gguf
+          curl --fail --silent --show-error --location --retry 2 --retry-max-time 90 --max-time 60 \
+            --output llama.tar.gz \
+            https://github.com/ggml-org/llama.cpp/releases/download/b12244/llama-b12244-bin-ubuntu-x64.tar.gz
+          sha256sum --check <<'HASHES'
+          509287f78cb4d4cf6b3843734733b914b2c158e43e22a7f4bf5e963800894d3c  qwen2.5-coder-7b-instruct-q4_k_m.gguf
+          c1d7e7f31b5c43f3e5d44f667b4d57104217be3e5f2060320cd3735651238849  llama.tar.gz
+          HASHES
+          tar -xzf llama.tar.gz
+      - name: Actual coding model through signed worker, PostgreSQL and Docker
+        if: github.event_name != 'push'
+        env:
+          FOUNDRY_PLATFORM_PG_TEST: '1'
+          FOUNDRY_BUILDER_REAL_DOCKER: '1'
+          FOUNDRY_PLATFORM_TEST_DATABASE_URL: postgres://platform_ci:platform_ci_test_only@127.0.0.1:5432/platform_authority_test
+          FOUNDRY_RUNNER_SOURCE_ROOT: ${{ github.workspace }}/.integration/runner
+        run: |
+          FOUNDRY_BUILDER_MODEL_ASSETS="$RUNNER_TEMP/foundry-coding-model" \
+            uv run pytest -s -vv 'tests/test_postgres_artifact_worker.py::test_core_builder_runs_metered_model_and_final_scanned_zip[live]'
       - name: Checkout coordinated registry
         uses: actions/checkout@v4
         with:
