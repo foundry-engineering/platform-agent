@@ -112,10 +112,24 @@ actual Core HTTPS/PostgreSQL tests reject mismatched project, agent and work-nod
 selectors. Negative cases cover replay, scope, revocation and pre-provider
 cancellation.
 
-The test model server and Core/storage counterparties in the session test are
-explicit fixtures. Actual Core HTTP contracts and real Docker checks run in
-their own mandatory integration steps. These checks establish executable
-application-to-Runner orchestration; they are not evidence of deployed model
-weights or a live customer execution. Live operation requires the provisioned
-model service, real private profile/secrets, reviewed sandbox image and existing
-approved authority and budgets. Production code has no fixture-model fallback.
+The two-round regression uses an explicit model-response fixture to guarantee
+a failed first candidate. The PR and manual CI runs also start a local
+checksum-pinned Qwen2.5-Coder-7B runtime and use its actual response. The live
+test first verifies that a seeded pricing bug fails the Docker checks. It then
+requires the signed worker to repair the source, settle the measured tokens in
+PostgreSQL, pass independent Docker checks and produce a ZIP containing the
+verified bytes. The job log records the model, token counts, source digest and
+verification references. The token tariff is for test accounting.
+
+On 15 November 2026 the local run repaired the seeded bug with 331 input and
+125 output tokens in one model invocation. The inference took 61.35 seconds.
+PostgreSQL 16 stored the settlement. Independent checks ran in read-only,
+network-denied Linux namespaces on that host. The verified source SHA-256 was
+`713150536ec72e73a0b80ea57b40cc874c64589771fda55b69affc8f168a34b4`.
+The equivalent Docker check is required separately in the native CI run.
+
+The worker test uses isolated Core/storage counterparties. Actual Core HTTP
+contracts run in a separate integration step. A live customer execution still
+requires the deployed model service, private profile and secrets, reviewed
+sandbox image, and existing approved authority and budgets. Production code
+has no fixture-model fallback.

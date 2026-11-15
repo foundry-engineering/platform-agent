@@ -208,9 +208,19 @@ def test_worker_reaches_production_engineering_http_handler_and_accounts_for_its
         assert not thread.is_alive()
 
 
-@pytest.mark.parametrize("sandbox", ["unit", "docker"])
-def test_core_builder_runs_two_paid_model_rounds_and_final_scanned_zip(database, tmp_path, monkeypatch, sandbox):
-    """Actual full runtime wiring. Only Core/storage and upstream weights are fixtures."""
+@pytest.fixture
+def live_coding_runtime(tmp_path):
+    from live_coding_model import live_model
+
+    if os.environ.get("FOUNDRY_BUILDER_REAL_DOCKER") != "1":
+        pytest.fail("live model acceptance requires the real Docker verifier")
+    with live_model(tmp_path / "llama", Path(os.environ["FOUNDRY_BUILDER_MODEL_ASSETS"])) as runtime:
+        yield runtime
+
+
+@pytest.mark.parametrize("sandbox", ["unit", "docker", "live"])
+def test_core_builder_runs_metered_model_and_final_scanned_zip(database, tmp_path, monkeypatch, sandbox, request):
+    """Signed Builder with actual persistence and optional real model and Docker."""
     import io
     import zipfile
     from dataclasses import replace
@@ -223,11 +233,22 @@ def test_core_builder_runs_two_paid_model_rounds_and_final_scanned_zip(database,
     from platform_agent.core_builder_runtime import CoreBuilderConfiguration, CoreBuilderWorker
     from platform_agent.grant_signing import ExecutionGrantSigner, sign_execution_grant
     from builder_runtime_fixture import Harness as CodeHarness, IMAGE
+    if sandbox == "live" and not os.environ.get("FOUNDRY_BUILDER_MODEL_ASSETS"):
+        pytest.skip("live model weights are explicitly configured in acceptance")
     if sandbox == "docker" and os.environ.get("FOUNDRY_BUILDER_REAL_DOCKER") != "1":
         pytest.skip("actual Docker execution is mandatory in native integration")
+    live = sandbox == "live"
     h = Harness(tmp_path, monkeypatch)
+    if live:
+        h.config = replace(h.config, max_input_tokens=4096, max_output_tokens=192)
     prepare(h, database)
-    h.job = replace(h.job, objective="Build a function returning 42")
+    objective = (
+        "Repair src/app.py. Keep the typed total_cents(lines) signature. "
+        "Return the sum of price TIMES quantity for each pair. Empty input totals 0. "
+        "Use one return statement, no comments or docstrings."
+        if live else "Build a function returning 42"
+    )
+    h.job = replace(h.job, objective=objective)
     code_root = tmp_path / "builder"
     code_root.mkdir(mode=0o700)
     code = CodeHarness(code_root)
@@ -295,11 +316,22 @@ def test_core_builder_runs_two_paid_model_rounds_and_final_scanned_zip(database,
                 'usage': {'prompt_tokens': 64, 'completion_tokens': 24, 'total_tokens': 88}}
     inference = InferenceFixture()
     secret = 'builder_runner_' + 'r' * 40
-    settings = ModelSettings(model_id='core-builder-inference-fixture', upstream_url='http://127.0.0.1:8000/v1/chat/completions',
-        upstream_api_key='builder_upstream_' + 'u' * 40, runner_api_key=secret, policy_sha256='a' * 64,
+    if live:
+        from live_coding_model import MODEL_ID
+
+        endpoint, upstream_token = request.getfixturevalue("live_coding_runtime")
+        model_id = MODEL_ID
+    else:
+        endpoint = "http://127.0.0.1:8000/v1/chat/completions"
+        upstream_token = "builder_upstream_" + "u" * 40
+        model_id = "core-builder-inference-fixture"
+    settings = ModelSettings(model_id=model_id, upstream_url=endpoint,
+        upstream_api_key=upstream_token, runner_api_key=secret, policy_sha256='a' * 64,
         journal_path=tmp_path / 'core-builder-inference.db', price_input_per_million_microusd=100000,
-        price_output_per_million_microusd=100000, max_output_tokens=h.config.max_output_tokens)
-    server = ModelHttpServer(('127.0.0.1', 0), model_http_handler(RealCodingModelService(settings, inference=inference)))
+        price_output_per_million_microusd=100000, max_output_tokens=h.config.max_output_tokens,
+        timeout_seconds=110 if live else 90)
+    service = RealCodingModelService(settings) if live else RealCodingModelService(settings, inference=inference)
+    server = ModelHttpServer(('127.0.0.1', 0), model_http_handler(service))
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
     control = ControlPlaneHttpClient(base_url='https://core.example.test', tenant_id=h.config.tenant_id,
@@ -309,7 +341,7 @@ def test_core_builder_runs_two_paid_model_rounds_and_final_scanned_zip(database,
         from agent_protocol.schema import canonical_sha256
         invocation = 'inv_' + canonical_sha256([envelope['run_id'], tag])[:32]
         provider = LocalExecutionProvider(endpoint=f'http://127.0.0.1:{server.server_address[1]}', token_supplier=lambda: secret,
-            model_context=context or None, model_invocation_id=invocation if tag != 'delivery' else None,
+            timeout_seconds=120, model_context=context or None, model_invocation_id=invocation if tag != 'delivery' else None,
             provider_budget_ceiling_microusd=ceiling)
         return build_core_artifact_worker(binding=h.config, core_origin='https://core.example.test',
             core_token_supplier=lambda: 'service-fixture-secret', admissions=h.admissions, package=h.package,
@@ -320,7 +352,33 @@ def test_core_builder_runs_two_paid_model_rounds_and_final_scanned_zip(database,
             task_id=code.task.task_id, invocation_tag=tag, reservation_ceiling_microusd=ceiling)
     tests = code.workspace / 'tests'
     tests.mkdir(mode=0o755)
-    (tests / 'test_app.py').write_text("import sys,unittest\nsys.path.insert(0,'/workspace/src')\nfrom app import main\nclass App(unittest.TestCase):\n def test_main(self): self.assertEqual(main(),42)\n")
+    source = code.workspace / "src/app.py"
+    if live:
+        source.parent.mkdir(mode=0o755)
+        source.write_text(
+            "def total_cents(lines: list[tuple[int, int]]) -> int:\n"
+            "    return sum(price + quantity for price, quantity in lines)\n"
+        )
+        original = source.read_bytes()
+        (tests / "test_app.py").write_text(
+            """import sys
+import unittest
+sys.path.insert(0, "/workspace/src")
+from app import total_cents
+
+class OrderTotals(unittest.TestCase):
+    def test_quantity_weighted_sum(self):
+        self.assertEqual(total_cents([(145, 3), (80, 2), (500, 0)]), 595)
+        self.assertEqual(total_cents([(85, 1)]), 85)
+        self.assertEqual(total_cents([(1000, 0)]), 0)
+
+    def test_exact_integer_arithmetic(self):
+        self.assertEqual(total_cents([(10**30, 13)]), 13 * 10**30)
+        self.assertEqual(total_cents([]), 0)
+"""
+        )
+    else:
+        (tests / 'test_app.py').write_text("import sys,unittest\nsys.path.insert(0,'/workspace/src')\nfrom app import main\nclass App(unittest.TestCase):\n def test_main(self): self.assertEqual(main(),42)\n")
     evidence = tmp_path / 'core-builder-docker-evidence'
     evidence.mkdir(mode=0o700)
     verifier = DockerSandboxVerifier(workspace=code.workspace, evidence_dir=evidence,
@@ -329,6 +387,9 @@ def test_core_builder_runs_two_paid_model_rounds_and_final_scanned_zip(database,
     if sandbox == 'unit':
         verifier = code.verifier
     try:
+        if live:
+            baseline = verifier.verify(code.task, round_number=1)
+            assert not baseline.passed and baseline.evidence_refs
         worker = CoreBuilderWorker(control=control,
             configuration=CoreBuilderConfiguration(code.task, h.config, h.job.work_node_id,
                 ('src/app.py',), code.workspace, code.state),
@@ -337,19 +398,47 @@ def test_core_builder_runs_two_paid_model_rounds_and_final_scanned_zip(database,
             tenant_context=lambda: h.admissions.current_context(h.config.tenant_id,h.config.project_id),
             skill_id=h.package['skill_id'], skill_contract_sha256=h.package['skill_contract_sha256'], clock=lambda: h.now)
         assert worker.run_once()
-        assert inference.calls == 2 and len(peers.uploads) == 3
         assert len([x for x in peers.events if x.get('type') == 'artifact']) == 1
         assert peers.events[-1]['outcome'] == 'completed'
-        content = peers.objects['output_builder_3']['content']
-        archive = zipfile.ZipFile(io.BytesIO(content))
-        assert b'return 42' in archive.read('src/app.py')
-        manifest = json.loads(archive.read('builder-result.json'))
-        assert manifest['actual_model_microusd'] == 20
+        with zipfile.ZipFile(io.BytesIO(peers.objects[peers.current]["content"])) as archive:
+            final = archive.read("src/app.py")
+            manifest = json.loads(archive.read("builder-result.json"))
+        rounds = len(manifest["steps"])
+        assert len(peers.uploads) == rounds + 1
+        assert manifest["delivery_verification"]["passed"] is True
+        assert manifest["files"] == [{"path": "src/app.py", "sha256": hashlib.sha256(final).hexdigest()}]
+        if live:
+            assert inference.calls == 0 and 1 <= rounds <= code.task.max_rounds
+            assert final != original and final == source.read_bytes()
+        else:
+            assert inference.calls == rounds == 2
+            assert b"return 42" in final
+            assert manifest["actual_model_microusd"] == 20
         with database() as db:
-            assert db.execute('SELECT count(*),sum(actual_total_microusd) FROM foundry_spend_settlement').fetchone() == (2, 20)
-            assert db.execute('SELECT count(*) FROM foundry_waw_invocation_claim').fetchone() == (2,)
-            assert db.execute("SELECT reserved_paid_invocations FROM foundry_budget_scope WHERE scope_type='task'").fetchone() == (2,)
+            settlements = db.execute(
+                "SELECT provider_id,model_or_tool_id,actual_total_microusd,input_tokens,output_tokens "
+                "FROM foundry_spend_settlement"
+            ).fetchall()
+            assert len(settlements) == rounds
+            assert sum(row[2] for row in settlements) == manifest["actual_model_microusd"]
+            if live:
+                assert all(
+                    provider == "foundry-selfhosted" and model == model_id and cost > 0
+                    and input_tokens > 0 and output_tokens > 0
+                    for provider, model, cost, input_tokens, output_tokens in settlements
+                )
+                print(json.dumps({
+                    "model": model_id,
+                    "rounds": rounds,
+                    "inputTokens": sum(row[3] for row in settlements),
+                    "outputTokens": sum(row[4] for row in settlements),
+                    "sourceSha256": hashlib.sha256(final).hexdigest(),
+                    "verifiedDelivery": manifest["delivery_verification"]["evidence_refs"],
+                }, sort_keys=True))
+            assert db.execute('SELECT count(*) FROM foundry_waw_invocation_claim').fetchone() == (rounds,)
+            assert db.execute("SELECT reserved_paid_invocations FROM foundry_budget_scope WHERE scope_type='task'").fetchone() == (rounds,)
     finally:
         server.shutdown()
         server.server_close()
         thread.join(timeout=3)
+        assert not thread.is_alive()
