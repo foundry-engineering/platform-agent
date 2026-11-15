@@ -113,8 +113,8 @@ selectors. Negative cases cover replay, scope, revocation and pre-provider
 cancellation.
 
 The two-round regression uses an explicit model-response fixture to guarantee
-a failed first candidate. The PR and manual CI runs also start a local
-checksum-pinned Qwen2.5-Coder-7B runtime and use its actual response. The live
+a failed first candidate. The PR and manual CI runs start Engineering's
+deployable `foundry-model-host` with the pinned Qwen2.5-Coder-7B assets. The live
 test first verifies that a seeded pricing bug fails the Docker checks. It then
 requires the signed worker to repair the source, settle the measured tokens in
 PostgreSQL, pass independent Docker checks and produce a ZIP containing the
