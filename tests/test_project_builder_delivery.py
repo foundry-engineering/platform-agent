@@ -130,7 +130,11 @@ def test_explicit_project_files_cross_signed_execution_and_private_delivery(
     assert manifest["execution_grant_id"] == h.grant["grant_id"]
     assert manifest["delivery_verification"]["passed"] is True
     if docker:
-        assert len(list(evidence.glob("*.json"))) == 2
+        records = [json.loads(path.read_bytes()) for path in evidence.glob("*.json")]
+        assert len(records) == 4
+        assert {(item["round"], item["check_id"]) for item in records} == {
+            (round_number, check.check_id) for round_number in (1, 2) for check in checks}
+        assert all(item["passed"] is True for item in records)
 
 
 def test_project_extension_cannot_widen_an_existing_src_only_grant(tmp_path: Path) -> None:
