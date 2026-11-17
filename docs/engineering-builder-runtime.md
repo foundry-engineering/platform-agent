@@ -12,7 +12,7 @@ stops issuance; an external signing callback cannot hide an intervening revoke.
 `TenantBuilderRuntime` composes that issuer with `RunnerBudgetedPlanner`, fresh
 `ScopedSourceContext`, the canonical signed DOP executor, an independently
 configured verifier and `ContentAddressedArtifactStore`. Construct it with the
-approved authority, an absolute isolated workspace, an explicit tuple of `src/`
+approved authority, an absolute isolated workspace, an explicit tuple of project file
 paths, the trusted `AdmittedRunnerModel` port, an independent verifier, the
 existing tenant artifact store and a pre-existing private state directory outside
 the workspace. Install `platform-agent[worker,integration]` for this composition.
@@ -88,7 +88,7 @@ The profile is an owner-only JSON file with schemaVersion
 | workspaceSigners, witnessSigners | Lists of objects containing exactly `kid` and `privateKeyFile`; each file contains the base64 Ed25519 private seed for an existing operational signer. |
 | coreWorkNodeId | The exact approved Core work node. |
 | workspace | Absolute isolated code workspace. |
-| sourcePaths | Explicit list of permitted `src/` paths. |
+| sourcePaths | Explicit list of permitted project paths, covered by both signed read and write capabilities. |
 | stateDirectory | Existing private attempt-state directory outside the code workspace. |
 | artifactStoreRoot | Existing private tenant artifact-store directory outside the code workspace. |
 | verificationEvidenceDirectory | Existing private verification-evidence directory outside the code workspace. |
@@ -133,3 +133,30 @@ contracts run in a separate integration step. A live customer execution still
 requires the deployed model service, private profile and secrets, reviewed
 sandbox image, and existing approved authority and budgets. Production code
 has no fixture-model fallback.
+
+## Explicit project files
+
+Engineering main `b297f509fe0addb8f7c907b0262023b0cbce654c` extends each
+work unit to `src/`, `app/`, `lib/`, `public/` and `migrations/`, together with
+`package.json`, `pyproject.toml`, `tsconfig.json`, `README.md`, `index.html`,
+`next.config.ts`, `next.config.mjs`, `vite.config.ts` and `Dockerfile`. SQL and
+JavaScript module outputs are supported. Every non-`src/` output must have an
+exact supplied source snapshot, including null snapshots for new files.
+
+The worker still requires the exact operational `sourcePaths` list to be
+covered by both read and write capabilities in an existing signed grant. A
+manifest or migration path does not extend an earlier `src/`-only grant. Hidden
+metadata, credentials and independent test files remain excluded. Full-file
+replacements retain their expected SHA-256 precondition.
+
+The signed delivery regression assembles a manifest, application module, SQL
+migration and public page, seals their exact bytes and verifies the private ZIP
+manifest. Its Docker variant runs the migration and two-tenant application
+queries in the existing isolated immutable Python image. Model/economic
+counterparties in these regressions are explicit fixtures. The ordinary real
+model worker acceptance remains a separate check.
+
+This is bounded project-file support: each work unit still carries at most 16
+source snapshots, eight output files per model round and 32 KiB of total source
+context. Larger platforms require separately admitted work units; this change
+does not establish unrestricted project generation or a production release.
