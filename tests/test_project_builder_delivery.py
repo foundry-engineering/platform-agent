@@ -93,24 +93,24 @@ def test_explicit_project_files_cross_signed_execution_and_private_delivery(
     admit_project_paths(h)
     model = ProjectModelFixture()
     verifier: Any = ProjectBytesVerifier(h.workspace)
+    checks = (
+        TrustedCheck("project-manifest", ("/usr/local/bin/python", "-B", "-c",
+            "from pathlib import Path; import tomllib; p=Path('/workspace'); "
+            "assert tomllib.loads((p/'pyproject.toml').read_text())['project']['name']=='tenant-store'; "
+            "assert (p/'public/index.html').read_text().startswith('<!doctype html>')")),
+        TrustedCheck("migration-tenant-isolation", ("/usr/local/bin/python", "-B", "-c",
+            "import sqlite3,runpy; from pathlib import Path; p=Path('/workspace'); "
+            "db=sqlite3.connect(':memory:'); db.executescript((p/'migrations/001.sql').read_text()); "
+            "db.executemany('INSERT INTO records VALUES(?,?)',[('a','private-a'),('b','private-b')]); "
+            "v=runpy.run_path(str(p/'app/store.py'))['values']; "
+            "assert v(db,'a')==['private-a']; assert v(db,'b')==['private-b']; "
+            "assert v(db,\"a' OR 1=1 --\")==[]")),
+    )
     if docker:
         evidence = tmp_path / "independent-project-evidence"
         evidence.mkdir(mode=0o700)
-        expression = (
-            "from pathlib import Path; import runpy, sqlite3, tomllib; "
-            "root=Path('/workspace'); "
-            "assert tomllib.loads((root/'pyproject.toml').read_text())['project']['name']=='tenant-store'; "
-            "assert (root/'public/index.html').read_text().startswith('<!doctype html>'); "
-            "db=sqlite3.connect(':memory:'); "
-            "db.executescript((root/'migrations/001.sql').read_text()); "
-            "db.executemany('INSERT INTO records VALUES(?,?)', [('a','private-a'),('b','private-b')]); "
-            "values=runpy.run_path(str(root/'app/store.py'))['values']; "
-            "assert values(db,'a')==['private-a']; assert values(db,'b')==['private-b']; "
-            "assert values(db,\"a' OR 1=1 --\")==[]"
-        )
         verifier = DockerSandboxVerifier(workspace=h.workspace, evidence_dir=evidence,
-            profile=TrustedSandboxProfile(image=IMAGE, checks=(TrustedCheck(
-                "project-migration-and-tenant-isolation", ("/usr/local/bin/python", "-B", "-c", expression)),)))
+            profile=TrustedSandboxProfile(image=IMAGE, checks=checks))
     result = h.runtime(source_paths=PATHS, runner=model, verifier=verifier).run()
     assert result.execution.status == "verified" and result.artifact is not None
     assert len(model.requests) == 1 and result.execution.used_model_microusd == 1
