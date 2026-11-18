@@ -218,7 +218,7 @@ def live_coding_runtime(tmp_path):
         yield runtime
 
 
-@pytest.mark.parametrize("sandbox", ["unit", "docker", "live"])
+@pytest.mark.parametrize("sandbox", ["unit", "docker", "project", "live"])
 def test_core_builder_runs_metered_model_and_final_scanned_zip(database, tmp_path, monkeypatch, sandbox, request):
     """Signed Builder with actual persistence and optional real model and Docker."""
     import io
@@ -235,18 +235,23 @@ def test_core_builder_runs_metered_model_and_final_scanned_zip(database, tmp_pat
     from builder_runtime_fixture import Harness as CodeHarness, IMAGE
     if sandbox == "live" and not os.environ.get("FOUNDRY_BUILDER_MODEL_ASSETS"):
         pytest.skip("live model weights are explicitly configured in acceptance")
-    if sandbox == "docker" and os.environ.get("FOUNDRY_BUILDER_REAL_DOCKER") != "1":
+    if sandbox in {"docker", "project"} and os.environ.get("FOUNDRY_BUILDER_REAL_DOCKER") != "1":
         pytest.skip("actual Docker execution is mandatory in native integration")
     live = sandbox == "live"
+    project = sandbox == "project"
+    from work_unit_fixture import FILES, PARTS, PATHS, UNITS, assigned_unit, verifiers as project_verifiers
     h = Harness(tmp_path, monkeypatch)
     if live:
         h.config = replace(h.config, max_input_tokens=4096, max_output_tokens=192)
+    elif project:
+        h.config = replace(h.config, max_input_tokens=4096, max_output_tokens=3072)
     prepare(h, database)
     objective = (
         "Repair src/app.py. Keep the typed total_cents(lines) signature. "
         "Return the sum of price TIMES quantity for each pair. Empty input totals 0. "
         "Use one return statement, no comments or docstrings."
-        if live else "Build a function returning 42"
+        if live else "Build a tenant-isolated application in approved work units"
+        if project else "Build a function returning 42"
     )
     h.job = replace(h.job, objective=objective)
     code_root = tmp_path / "builder"
@@ -262,6 +267,8 @@ def test_core_builder_runs_metered_model_and_final_scanned_zip(database, tmp_pat
     grant["tenant_context"] = snapshot.context.as_dict()
     grant["agent_id"] = h.config.canonical_agent_id
     grant["policy_ref"] = {**grant["policy_ref"], "policy_sha256": "a" * 64}
+    if project:
+        grant["read_paths"], grant["write_paths"] = list(PATHS), list(PATHS)
     grant["grant_id"] = derive_execution_grant_id(grant)
     code.grant = sign_execution_grant(grant, signers=(ExecutionGrantSigner("kid_builder-grant.v1",
         code.grant_key.public_key().public_bytes_raw(), code.grant_key.sign),))
@@ -306,13 +313,19 @@ def test_core_builder_runs_metered_model_and_final_scanned_zip(database, tmp_pat
             self.calls += 1
             prompt = payload['messages'][1]['content']
             context = json.loads(prompt.split('Task data (JSON):\n')[1])
-            source = context['sourceContext'][0]
-            file = {'path': source['path'], 'content': 'def main():\n    return ' + ('0' if self.calls == 1 else '42') + '\n'}
-            if source['sha256'] is not None:
-                file['expectedSha256'] = source['sha256']
-                assert context['verificationFeedback']
+            if project:
+                unit_id = assigned_unit(context['verificationFeedback'])
+                files = [{"path": path, "content": content} for path, content in PARTS[unit_id].items()]
+                assert len(files) == 8 and len(context['sourceContext']) <= 16
+            else:
+                source = context['sourceContext'][0]
+                file = {'path': source['path'], 'content': 'def main():\n    return ' + ('0' if self.calls == 1 else '42') + '\n'}
+                if source['sha256'] is not None:
+                    file['expectedSha256'] = source['sha256']
+                    assert context['verificationFeedback']
+                files = [file]
             return {'model': payload['model'], 'choices': [{'finish_reason': 'stop',
-                'message': {'content': json.dumps({'files': [file]})}}],
+                'message': {'content': json.dumps({'files': files})}}],
                 'usage': {'prompt_tokens': 64, 'completion_tokens': 24, 'total_tokens': 88}}
     inference = InferenceFixture()
     secret = 'builder_runner_' + 'r' * 40
@@ -385,28 +398,41 @@ class OrderTotals(unittest.TestCase):
             ('/usr/local/bin/python','-B','-m','unittest','discover','-s','/workspace/tests')),)))
     if sandbox == 'unit':
         verifier = code.verifier
+    unit_verifiers = None
+    if project:
+        verifier, unit_verifiers = project_verifiers(code.workspace, evidence, docker=True)
     try:
         if live:
             baseline = verifier.verify(code.task, round_number=1)
             assert not baseline.passed and baseline.evidence_refs
         worker = CoreBuilderWorker(control=control,
             configuration=CoreBuilderConfiguration(code.task, h.config, h.job.work_node_id,
-                ('src/app.py',), code.workspace, code.state),
+                PATHS if project else ('src/app.py',), code.workspace, code.state,
+                work_units=UNITS if project else ()),
             authority_factory=lambda check: code.authority(execution_checkpoint=check), worker_factory=factory,
             verifier=verifier, artifacts=code.artifacts,
             tenant_context=lambda: h.admissions.current_context(h.config.tenant_id,h.config.project_id),
-            skill_id=h.package['skill_id'], skill_contract_sha256=h.package['skill_contract_sha256'], clock=lambda: h.now)
+            skill_id=h.package['skill_id'], skill_contract_sha256=h.package['skill_contract_sha256'],
+            clock=lambda: h.now, unit_verifiers=unit_verifiers)
         assert worker.run_once()
         assert len([x for x in peers.events if x.get('type') == 'artifact']) == 1
         assert peers.events[-1]['outcome'] == 'completed'
         with zipfile.ZipFile(io.BytesIO(peers.objects[peers.current]["content"])) as archive:
-            final = archive.read("src/app.py")
+            final = archive.read("src/main.py" if project else "src/app.py")
             manifest = json.loads(archive.read("builder-result.json"))
+            if project:
+                assert set(archive.namelist()) == {*FILES, "builder-result.json"}
+                assert all(archive.read(path) == content.encode() for path, content in FILES.items())
         rounds = len(manifest["steps"])
         assert len(peers.uploads) == rounds + 1
         assert manifest["delivery_verification"]["passed"] is True
-        assert manifest["files"] == [{"path": "src/app.py", "sha256": hashlib.sha256(final).hexdigest()}]
-        if live:
+        assert manifest["files"] == ([{"path": path, "sha256": hashlib.sha256(FILES[path].encode()).hexdigest()}
+            for path in PATHS] if project else [{"path": "src/app.py", "sha256": hashlib.sha256(final).hexdigest()}])
+        if project:
+            assert manifest["schema_version"] == "foundry.builder-delivery.v2"
+            assert len(manifest["work_unit_results"]) == inference.calls == rounds == 3
+            assert manifest["actual_model_microusd"] == 30
+        elif live:
             assert inference.calls == 0 and 1 <= rounds <= code.task.max_rounds
             assert final != original and final == source.read_bytes()
         else:

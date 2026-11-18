@@ -7,6 +7,7 @@ import json
 import sys
 from collections.abc import Callable, Mapping
 from pathlib import Path
+from dataclasses import replace
 from typing import Any
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -17,6 +18,7 @@ from foundry_runner.execution_provider import ExecutionWorker
 
 from .admitted_scheduler import AdmittedSchedule
 from .artifact_store import ContentAddressedArtifactStore
+from .builder_work_units import BuilderWorkUnit, validate_work_units
 from .control_plane import DispatchPlan, TaskAssignment
 from .core_builder_runtime import CoreBuilderConfiguration, CoreBuilderWorker
 from .core_execution_authorizer import ArtifactWorkerBinding
@@ -78,8 +80,20 @@ def load_builder(profile_path: Path) -> CoreBuilderWorker:
         "grantTrustedKeysFile", "workspaceSigners", "witnessSigners", "coreWorkNodeId", "workspace",
         "sourcePaths", "stateDirectory", "artifactStoreRoot", "verificationEvidenceDirectory",
         "sandbox", "maximumSeconds"}
-    if set(data) != keys or data["schemaVersion"] != "foundry.core-builder-profile.v1":
+    version = data.get("schemaVersion")
+    expected_keys = keys if version == "foundry.core-builder-profile.v1" else keys - {"sourcePaths"} | {"workUnits"}
+    if set(data) != expected_keys or version not in {"foundry.core-builder-profile.v1", "foundry.core-builder-profile.v2"}:
         raise WorkerConfigurationError("exact Core Builder operational profile required")
+    work_units: tuple[BuilderWorkUnit, ...] = ()
+    if version == "foundry.core-builder-profile.v2":
+        if not isinstance(data["workUnits"], list) or not 1 <= len(data["workUnits"]) <= 6:
+            raise WorkerConfigurationError("bounded explicit Builder work units required")
+        work_units = tuple(BuilderWorkUnit.from_payload(item) for item in data["workUnits"])
+        source_paths = tuple(sorted({path for unit in work_units for path in unit.source_paths}))
+    else:
+        if not isinstance(data["sourcePaths"], list):
+            raise WorkerConfigurationError("explicit Builder source list required")
+        source_paths = tuple(data["sourcePaths"])
     runtime_path = Path(data["artifactWorkerProfileFile"])
     runtime = _document(str(runtime_path), 64 * 1024)
     frozen_runtime = json.dumps(runtime, sort_keys=True, separators=(",", ":"))
@@ -111,11 +125,21 @@ def load_builder(profile_path: Path) -> CoreBuilderWorker:
         project_id=binding.project_id, agent_id=binding.core_agent_id, work_node_id=data["coreWorkNodeId"])
     sandbox = dict(data["sandbox"])
     sandbox["checks"] = tuple(TrustedCheck(item["check_id"], tuple(item["argv"])) for item in sandbox["checks"])
+    sandbox_profile = TrustedSandboxProfile(**sandbox)
     verifier = DockerSandboxVerifier(workspace=Path(data["workspace"]),
-        evidence_dir=Path(data["verificationEvidenceDirectory"]), profile=TrustedSandboxProfile(**sandbox))
+        evidence_dir=Path(data["verificationEvidenceDirectory"]), profile=sandbox_profile)
+    unit_verifiers = None
+    if work_units:
+        checks = {check.check_id: check for check in sandbox_profile.checks}
+        if any(check_id not in checks for unit in work_units for check_id in unit.check_ids):
+            raise WorkerConfigurationError("work-unit checks must exist in the trusted sandbox profile")
+        unit_verifiers = {unit.unit_id: DockerSandboxVerifier(workspace=Path(data["workspace"]),
+            evidence_dir=Path(data["verificationEvidenceDirectory"]),
+            profile=replace(sandbox_profile, checks=tuple(checks[key] for key in unit.check_ids)))
+            for unit in work_units}
     artifacts = ContentAddressedArtifactStore(Path(data["artifactStoreRoot"]), tenants)
-    config = CoreBuilderConfiguration(task, binding, data["coreWorkNodeId"], tuple(data["sourcePaths"]),
-        Path(data["workspace"]), Path(data["stateDirectory"]), data["maximumSeconds"])
+    config = CoreBuilderConfiguration(task, binding, data["coreWorkNodeId"], source_paths,
+        Path(data["workspace"]), Path(data["stateDirectory"]), data["maximumSeconds"], work_units)
     # Validate the configured execution identity and existing signed grant before
     # claiming a Core job. The online Core lease is attached after that claim.
     def authority_factory(checkpoint: Callable[[], None]) -> TenantBuilderAuthority:
@@ -126,6 +150,9 @@ def load_builder(profile_path: Path) -> CoreBuilderWorker:
     preflight = authority_factory(lambda: None)
     if preflight.agent_id != binding.canonical_agent_id:
         raise WorkerConfigurationError("Builder Execution Grant authorizes a different canonical agent")
+    preflight.require_source_paths(source_paths)
+    if work_units:
+        validate_work_units(task, source_paths, work_units, preflight.policy_ref)
     def worker_factory(context: Mapping[str, Any], tag: str, ceiling: int | None,
                        envelope: Mapping[str, Any]) -> ExecutionWorker:
         current = _document(str(runtime_path), 64 * 1024)
@@ -137,7 +164,8 @@ def load_builder(profile_path: Path) -> CoreBuilderWorker:
     return CoreBuilderWorker(control=control, configuration=config, authority_factory=authority_factory,
         worker_factory=worker_factory, verifier=verifier, artifacts=artifacts,
         tenant_context=lambda: admissions.current_context(task.tenant_id, task.project_id),
-        skill_id=package["skill_id"], skill_contract_sha256=package["skill_contract_sha256"])
+        skill_id=package["skill_id"], skill_contract_sha256=package["skill_contract_sha256"],
+        unit_verifiers=unit_verifiers)
 
 
 def main() -> int:
