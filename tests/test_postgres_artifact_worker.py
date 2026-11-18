@@ -243,7 +243,7 @@ def test_core_builder_runs_metered_model_and_final_scanned_zip(database, tmp_pat
     from work_unit_fixture import FILES, PARTS, PATHS, UNITS, assigned_unit, verifiers as project_verifiers
     h = Harness(tmp_path, monkeypatch)
     if live:
-        h.config = replace(h.config, max_input_tokens=4096, max_output_tokens=256 if live_units else 192)
+        h.config = replace(h.config, max_input_tokens=4096, max_output_tokens=192)
     elif project:
         h.config = replace(h.config, max_input_tokens=4096, max_output_tokens=3072)
     prepare(h, database)
