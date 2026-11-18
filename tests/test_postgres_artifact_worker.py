@@ -209,12 +209,14 @@ def test_worker_reaches_production_engineering_http_handler_and_accounts_for_its
 
 
 @pytest.fixture
-def live_coding_runtime(tmp_path):
+def live_coding_runtime(tmp_path, request):
     from live_coding_model import live_model
 
     if os.environ.get("FOUNDRY_BUILDER_REAL_DOCKER") != "1":
         pytest.fail("live model acceptance requires the real Docker verifier")
-    with live_model(tmp_path / "llama", Path(os.environ["FOUNDRY_BUILDER_MODEL_ASSETS"])) as runtime:
+    output_limit = 512 if request.node.callspec.params.get("sandbox") == "live_units" else 192
+    with live_model(tmp_path / "llama", Path(os.environ["FOUNDRY_BUILDER_MODEL_ASSETS"]),
+                    max_output_tokens=output_limit) as runtime:
         yield runtime
 
 
@@ -243,15 +245,15 @@ def test_core_builder_runs_metered_model_and_final_scanned_zip(database, tmp_pat
     from work_unit_fixture import FILES, PARTS, PATHS, UNITS, assigned_unit, verifiers as project_verifiers
     h = Harness(tmp_path, monkeypatch)
     if live:
-        h.config = replace(h.config, max_input_tokens=4096, max_output_tokens=192)
+        h.config = replace(h.config, max_input_tokens=4096, max_output_tokens=512 if live_units else 192)
     elif project:
         h.config = replace(h.config, max_input_tokens=4096, max_output_tokens=3072)
     prepare(h, database)
     objective = (
-        "Follow the current work-unit outputPaths exactly; repair ONLY its output file. "
-        "Keep signatures. src/pricing.py: total_cents(lines) sums price TIMES quantity. "
-        "src/orders.py: invoice(tenant, lines) returns {'tenant': tenant, 'amount': total_cents(lines)}. "
-        "Use 'from pricing import total_cents' in orders.py. No comments or docstrings."
+        "Repair the tenant billing code according to the current approved work-unit data. "
+        "Return exactly its outputPaths, never read-only dependency files. "
+        "Preserve signatures, exact integer arithmetic and tenant identity. "
+        "Produce minimal code without comments or docstrings."
         if live_units else
         "Repair src/app.py. Keep the typed total_cents(lines) signature. "
         "Return the sum of price TIMES quantity for each pair. Empty input totals 0. "
@@ -405,7 +407,17 @@ class OrderTotals(unittest.TestCase):
             ('/usr/local/bin/python','-B','-m','unittest','discover','-s','/workspace/tests')),)))
     live_paths, live_work_units = (), ()
     if live_units:
+        import http.client
         from platform_agent.builder_work_units import BuilderWorkUnit
+
+        original_response = http.client.HTTPConnection.getresponse
+        def diagnostic_response(connection):
+            response = original_response(connection)
+            if not 200 <= response.status < 300:
+                body = response.read(4096).decode("utf-8", errors="replace")
+                raise AssertionError(f"isolated model response HTTP {response.status}: {body}")
+            return response
+        monkeypatch.setattr(http.client.HTTPConnection, "getresponse", diagnostic_response)
 
         source = code.workspace / "src/orders.py"
         (code.workspace / "src/app.py").unlink()

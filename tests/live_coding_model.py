@@ -40,8 +40,10 @@ def _wait_ready(server: subprocess.Popen[bytes], port: int) -> None:
 
 
 @contextmanager
-def live_model(directory: Path, assets: Path) -> Iterator[tuple[str, str]]:
+def live_model(directory: Path, assets: Path, *, max_output_tokens: int = 192) -> Iterator[tuple[str, str]]:
     """Yield the managed Runner endpoint and its temporary test credential."""
+    if type(max_output_tokens) is not int or not 128 <= max_output_tokens <= 512:
+        raise ValueError("explicit bounded test-model output allowance required")
     directory.mkdir(mode=0o700)
     state = directory / "state"
     runtime = directory / "runtime"
@@ -59,7 +61,7 @@ def live_model(directory: Path, assets: Path) -> Iterator[tuple[str, str]]:
         "--assets", str(assets), "--state-dir", str(state), "--runtime-dir", str(runtime),
         "--runner-token-file", str(secret), "--policy-sha256", "a" * 64,
         "--input-tariff", "100000", "--output-tariff", "100000",
-        "--port", str(port), "--engine-port", str(engine_port), "--max-output-tokens", "192",
+        "--port", str(port), "--engine-port", str(engine_port), "--max-output-tokens", str(max_output_tokens),
     ]
     try:
         with subprocess.Popen(argv, stdin=subprocess.DEVNULL) as server:
