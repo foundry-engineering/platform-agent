@@ -24,6 +24,7 @@ from engineering_agent.builder_runner import AdmittedRunnerModel, RunnerBudgeted
 from engineering_agent.source_context import ScopedSourceContext, SourceSnapshot
 
 from .artifact_store import ArtifactRecord, ContentAddressedArtifactStore
+from .builder_auto_plan import AutomaticWorkPlan
 from .builder_work_units import (
     BuilderWorkUnit, ProjectSourceContext, WorkUnitPlanner, unit_definitions,
     unit_graph, validate_work_units,
@@ -124,6 +125,7 @@ class TenantBuilderRuntime:
         state_directory: Path,
         work_units: tuple[BuilderWorkUnit, ...] = (),
         unit_verifiers: Mapping[str, IndependentVerifier] | None = None,
+        automatic_plan: AutomaticWorkPlan | None = None,
     ) -> None:
         if not workspace.is_absolute() or workspace.is_symlink() or not workspace.is_dir():
             raise BuilderBoundaryError("absolute real Builder workspace required")
@@ -135,6 +137,12 @@ class TenantBuilderRuntime:
         if artifacts.root == root or artifacts.root.is_relative_to(root):
             raise BuilderBoundaryError("private Builder artifacts must be outside the workspace")
         authority.require_source_paths(source_paths)
+        if automatic_plan is not None:
+            if (automatic_plan.units != work_units
+                    or set(automatic_plan.specification.source_paths) != set(source_paths)):
+                raise BuilderBoundaryError("automatic plan differs from runtime configuration")
+            automatic_plan.require_current(authority, root)
+        self._automatic_plan = automatic_plan
         self._units, self._runner = work_units, runner
         self._unit_verifiers = dict(unit_verifiers or {})
         self._unit_results: list[dict[str, Any]] = []
@@ -205,6 +213,9 @@ class TenantBuilderRuntime:
             manifest["schema_version"] = "foundry.builder-delivery.v2"
             manifest["work_units"] = unit_definitions(self._units)
             manifest["work_unit_results"] = self._unit_results
+        if self._automatic_plan is not None:
+            manifest["schema_version"] = "foundry.builder-delivery.v3"
+            manifest["automatic_plan"] = self._automatic_plan.evidence()
         target = io.BytesIO()
         with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_DEFLATED) as archive:
             entries = [(item.path, item.content.encode("utf-8"))
@@ -224,6 +235,8 @@ class TenantBuilderRuntime:
     def run(self) -> BuilderDeliveryResult:
         authority, task = self._authority, self._authority.task
         authority.checkpoint()
+        if self._automatic_plan is not None:
+            self._automatic_plan.require_current(authority, self._workspace)
         # Validate the private output namespace before any consumed model call.
         self._artifacts.list_project(authority.context, repository_id=task.repository_id)
         try:
@@ -232,7 +245,8 @@ class TenantBuilderRuntime:
                 "execution_grant_id": authority.grant_id,
                 "task_sha256": hashlib.sha256(_json(asdict(task))).hexdigest(),
                 "configuration_sha256": hashlib.sha256(_json({"source_paths": self._source_paths,
-                    "work_units": unit_definitions(self._units)})).hexdigest(),
+                    "work_units": unit_definitions(self._units),
+                    "automatic_plan": self._automatic_plan.evidence() if self._automatic_plan else None})).hexdigest(),
             })
         except FileExistsError:
             raise BuilderBoundaryError("Builder grant already attempted; explicit recovery required") from None

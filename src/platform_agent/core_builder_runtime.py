@@ -29,6 +29,7 @@ from foundry_runner.project_execution_bridge import (
 
 from .artifact_store import ContentAddressedArtifactStore
 from .builder_work_units import BuilderWorkUnit
+from .builder_auto_plan import AutomaticWorkPlan
 from .core_execution_authorizer import ArtifactWorkerBinding
 from .engineering_builder_authority import TenantBuilderAuthority
 from .engineering_builder_runtime import BuilderDeliveryResult, TenantBuilderRuntime
@@ -200,6 +201,7 @@ class CoreBuilderConfiguration:
     state_directory: Path
     maximum_seconds: int = 600
     work_units: tuple[BuilderWorkUnit, ...] = ()
+    automatic_plan: AutomaticWorkPlan | None = None
 
 
 class CoreBuilderWorker:
@@ -243,7 +245,8 @@ class CoreBuilderWorker:
             completed = TenantBuilderRuntime(authority=authority, workspace=config.workspace,
                 source_paths=config.source_paths, runner=model, verifier=self._verifier,
                 artifacts=self._artifacts, state_directory=config.state_directory,
-                work_units=config.work_units, unit_verifiers=self._unit_verifiers).run()
+                work_units=config.work_units, unit_verifiers=self._unit_verifiers,
+                automatic_plan=config.automatic_plan).run()
             model.publish(completed, self._artifacts, authority.context)
             return True
         except Exception:

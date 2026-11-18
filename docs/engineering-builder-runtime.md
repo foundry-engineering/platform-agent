@@ -239,3 +239,58 @@ verified request snapshots. Explicit wrong/null hashes remain rejected, and
 actual file changes after a snapshot still prevent execution. The isolated
 multi-unit model profile explicitly allows up to 512 output tokens; the
 existing single-file acceptance retains its 192-token profile.
+
+
+## Automatic planning from approved source imports
+
+`foundry.core-builder-profile.v3` replaces `sourcePaths`/`workUnits` with one
+`autoPlan` object. All other private profile fields and existing signed authority
+remain required. For example:
+
+```json
+{
+  "schemaVersion": "foundry.builder-auto-plan.v1",
+  "sourcePaths": ["src/orders.py", "src/pricing.py"],
+  "fileChecks": {
+    "src/orders.py": ["invoices-check"],
+    "src/pricing.py": ["pricing-check"]
+  },
+  "maxFilesPerUnit": 1,
+  "maxRoundsPerUnit": 2,
+  "moduleAliases": {}
+}
+```
+
+The operator supplies the approved existing source manifest, fixed check IDs
+from `sandbox.checks`, and limits. The compiler supplies unit identities, order,
+dependencies and read-only dependency context. No model call, filesystem walk,
+source execution, additional job or extra budget is used for planning.
+
+Python AST and pinned Tree-sitter JavaScript/JSX/TypeScript/TSX grammars resolve
+static imports, re-exports and literal JavaScript require/import calls against
+that manifest only. Optional aliases map canonical directory prefixes, such as
+`"@/": "src/"`. Bare third-party packages create no repository edges; Python
+absolute names outside the manifest may be external packages. Computed or
+unsupported imports need an explicit v2 plan. These bounded static edges are
+scheduling data, not a proof of every possible runtime dependency.
+
+Import cycles and files sharing a check remain atomic. Deterministic packing
+preserves topological order and existing per-unit boundaries: at most eight
+outputs, 16 context files, 32 KiB context, 12 checks, six units, and the root
+approved model-call/budget ceiling. The aggregate planning input is at most 48
+existing files and 192 KiB. Oversized atomic groups, ambiguous/missing local
+imports, invalid syntax, denied paths and changed planning snapshots stop
+before inference. A source digest check runs again after the Core claim and
+before the attempt starts. Run on an isolated single-writer workspace.
+
+A verified automatic run emits `foundry.builder-delivery.v3`: the original
+source digests, static dependency graph, trusted check mapping, derived units
+and canonical planning digest accompany all existing execution, usage and
+independent delivery evidence. Explicit v1/v2 profiles retain their semantics.
+
+Native acceptance `[live_auto]` derives the two billing units from the original
+Python imports, runs the actual managed Qwen host through PostgreSQL-backed
+paid gates and signed DOP execution, executes fixed Docker checks and seals one
+v3 ZIP. This verifies the automatic existing-source repair path; it does not
+prove autonomous discovery of an arbitrary repository, creation of arbitrary
+new architectures, or permanent production hosting.

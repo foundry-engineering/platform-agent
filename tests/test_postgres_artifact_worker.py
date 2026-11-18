@@ -214,13 +214,13 @@ def live_coding_runtime(tmp_path, request):
 
     if os.environ.get("FOUNDRY_BUILDER_REAL_DOCKER") != "1":
         pytest.fail("live model acceptance requires the real Docker verifier")
-    output_limit = 512 if request.node.callspec.params.get("sandbox") == "live_units" else 192
+    output_limit = 512 if request.node.callspec.params.get("sandbox") in {"live_units", "live_auto"} else 192
     with live_model(tmp_path / "llama", Path(os.environ["FOUNDRY_BUILDER_MODEL_ASSETS"]),
                     max_output_tokens=output_limit) as runtime:
         yield runtime
 
 
-@pytest.mark.parametrize("sandbox", ["unit", "docker", "project", "live", "live_units"])
+@pytest.mark.parametrize("sandbox", ["unit", "docker", "project", "live", "live_units", "live_auto"])
 def test_core_builder_runs_metered_model_and_final_scanned_zip(database, tmp_path, monkeypatch, sandbox, request):
     """Signed Builder with actual persistence and optional real model and Docker."""
     import io
@@ -235,12 +235,14 @@ def test_core_builder_runs_metered_model_and_final_scanned_zip(database, tmp_pat
     from platform_agent.core_builder_runtime import CoreBuilderConfiguration, CoreBuilderWorker
     from platform_agent.grant_signing import ExecutionGrantSigner, sign_execution_grant
     from builder_runtime_fixture import Harness as CodeHarness, IMAGE
-    if sandbox in {"live", "live_units"} and not os.environ.get("FOUNDRY_BUILDER_MODEL_ASSETS"):
+    if sandbox in {"live", "live_units", "live_auto"} and not os.environ.get("FOUNDRY_BUILDER_MODEL_ASSETS"):
         pytest.skip("live model weights are explicitly configured in acceptance")
     if sandbox in {"docker", "project"} and os.environ.get("FOUNDRY_BUILDER_REAL_DOCKER") != "1":
         pytest.skip("actual Docker execution is mandatory in native integration")
-    live = sandbox in {"live", "live_units"}
-    live_units = sandbox == "live_units"
+    live = sandbox in {"live", "live_units", "live_auto"}
+    live_units = sandbox in {"live_units", "live_auto"}
+    auto = sandbox == "live_auto"
+    automatic_plan = None
     project = sandbox == "project"
     from work_unit_fixture import FILES, PARTS, PATHS, UNITS, assigned_unit, verifiers as project_verifiers
     h = Harness(tmp_path, monkeypatch)
@@ -253,6 +255,7 @@ def test_core_builder_runs_metered_model_and_final_scanned_zip(database, tmp_pat
         "Repair the tenant billing code according to the current approved work-unit data. "
         "Return exactly its outputPaths, never read-only dependency files. "
         "Preserve signatures, exact integer arithmetic and tenant identity. "
+        "For pricing multiply price by quantity, and for invoices preserve the supplied tenant. "
         "Produce minimal code without comments or docstrings."
         if live_units else
         "Repair src/app.py. Keep the typed total_cents(lines) signature. "
@@ -446,6 +449,14 @@ class OrderTotals(unittest.TestCase):
             BuilderWorkUnit("invoices", "Repair ONLY src/orders.py; preserve the supplied tenant and use total_cents",
                 live_paths, ("src/orders.py",), ("pricing",), 2, ("invoices-check",)),
         )
+        if auto:
+            from platform_agent.builder_auto_plan import AutoPlanSpecification, compile_automatic_plan
+            automatic_plan = compile_automatic_plan(authority=code.authority(), workspace=code.workspace,
+                specification=AutoPlanSpecification(live_paths,
+                    (("src/orders.py", ("invoices-check",)), ("src/pricing.py", ("pricing-check",))), 1, 2))
+            live_work_units = automatic_plan.units
+            assert [unit.output_paths for unit in live_work_units] == [("src/pricing.py",), ("src/orders.py",)]
+            assert live_work_units[1].dependencies == (live_work_units[0].unit_id,)
         checks = tuple(TrustedCheck(check_id, ("/usr/local/bin/python", "-B", "-m", "unittest",
             "discover", "-s", "/workspace/tests", "-p", pattern))
             for check_id, pattern in (("pricing-check", "test_pricing.py"), ("invoices-check", "test_orders.py")))
@@ -467,7 +478,7 @@ class OrderTotals(unittest.TestCase):
         worker = CoreBuilderWorker(control=control,
             configuration=CoreBuilderConfiguration(code.task, h.config, h.job.work_node_id,
                 PATHS if project else live_paths if live_units else ('src/app.py',), code.workspace, code.state,
-                work_units=UNITS if project else live_work_units),
+                work_units=UNITS if project else live_work_units, automatic_plan=automatic_plan),
             authority_factory=lambda check: code.authority(execution_checkpoint=check), worker_factory=factory,
             verifier=verifier, artifacts=code.artifacts,
             tenant_context=lambda: h.admissions.current_context(h.config.tenant_id,h.config.project_id),
@@ -483,8 +494,10 @@ class OrderTotals(unittest.TestCase):
                 assert set(archive.namelist()) == {*live_paths, "builder-result.json"}
                 assert manifest["files"] == [{"path": path, "sha256": hashlib.sha256(archive.read(path)).hexdigest()}
                     for path in live_paths]
-                assert manifest["schema_version"] == "foundry.builder-delivery.v2"
-                assert [unit["unit_id"] for unit in manifest["work_unit_results"]] == ["pricing", "invoices"]
+                assert manifest["schema_version"] == ("foundry.builder-delivery.v3" if auto else "foundry.builder-delivery.v2")
+                assert [unit["unit_id"] for unit in manifest["work_unit_results"]] == [unit.unit_id for unit in live_work_units]
+                if auto:
+                    assert manifest["automatic_plan"] == json.loads(json.dumps(automatic_plan.evidence()))
             if project:
                 assert set(archive.namelist()) == {*FILES, "builder-result.json"}
                 assert all(archive.read(path) == content.encode() for path, content in FILES.items())
@@ -520,6 +533,8 @@ class OrderTotals(unittest.TestCase):
                 )
                 print(json.dumps({
                     "model": model_id,
+                    "automaticPlanning": auto,
+                    "planSha256": automatic_plan.evidence()["plan_sha256"] if auto else None,
                     "rounds": rounds,
                     "inputTokens": sum(row[3] for row in settlements),
                     "outputTokens": sum(row[4] for row in settlements),
