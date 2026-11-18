@@ -1,6 +1,7 @@
 """Actual private-profile parsing and code authority; no API calls at startup."""
 import base64
 import json
+import pytest
 from dataclasses import asdict
 
 
@@ -11,7 +12,8 @@ from test_core_worker_service import write
 from builder_runtime_fixture import IMAGE, link_core_code_authority
 
 
-def test_real_private_profile_builds_actual_core_builder_without_model_or_signing(tmp_path, monkeypatch):
+@pytest.mark.parametrize("version", ["v1", "v2"])
+def test_real_private_profile_builds_actual_core_builder_without_model_or_signing(tmp_path, monkeypatch, version):
     h = Harness(tmp_path, monkeypatch)
     root = tmp_path / 'code'
     root.mkdir(mode=0o700)
@@ -56,6 +58,12 @@ def test_real_private_profile_builds_actual_core_builder_without_model_or_signin
         'sandbox': {'image': IMAGE, 'checks': [{'check_id': 'python-unittest',
             'argv': ['/usr/local/bin/python', '-B', '-m', 'unittest', 'discover', '-s', '/workspace/tests']}]},
     }
+    if version == "v2":
+        profile["schemaVersion"] = "foundry.core-builder-profile.v2"
+        profile.pop("sourcePaths")
+        profile["workUnits"] = [{"unitId": "unit_primary", "objective": code.task.goal,
+            "sourcePaths": ["src/app.py"], "outputPaths": ["src/app.py"], "dependencies": [],
+            "maxRounds": 3, "checkIds": ["python-unittest"]}]
     path = tmp_path / 'builder.json'
     write(path, json.dumps(profile).encode())
     assert isinstance(load_builder(path), CoreBuilderWorker)

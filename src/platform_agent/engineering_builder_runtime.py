@@ -12,18 +12,22 @@ import os
 import stat
 import zipfile
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
 from engineering_agent.builder import (
-    BuilderBoundaryError, BuilderResult, BuilderTask, IndependentVerifier,
+    BuilderBoundaryError, BuilderResult, BuilderStep, BuilderTask, IndependentVerifier,
     PlanProposal, Verification, run_builder,
 )
 from engineering_agent.builder_runner import AdmittedRunnerModel, RunnerBudgetedPlanner
 from engineering_agent.source_context import ScopedSourceContext, SourceSnapshot
 
 from .artifact_store import ArtifactRecord, ContentAddressedArtifactStore
+from .builder_work_units import (
+    BuilderWorkUnit, ProjectSourceContext, WorkUnitPlanner, unit_definitions,
+    unit_graph, validate_work_units,
+)
 from .engineering_builder_authority import TenantBuilderAuthority
 
 
@@ -90,6 +94,14 @@ class _LiveVerifier:
         return result
 
 
+class _OffsetVerifier:
+    def __init__(self, verifier: IndependentVerifier, offset: int) -> None:
+        self._verifier, self._offset = verifier, offset
+
+    def verify(self, task: BuilderTask, *, round_number: int) -> Verification:
+        return self._verifier.verify(task, round_number=round_number + self._offset)
+
+
 @dataclass(frozen=True, slots=True)
 class BuilderDeliveryResult:
     run_id: str
@@ -110,6 +122,8 @@ class TenantBuilderRuntime:
         source_paths: tuple[str, ...], runner: AdmittedRunnerModel,
         verifier: IndependentVerifier, artifacts: ContentAddressedArtifactStore,
         state_directory: Path,
+        work_units: tuple[BuilderWorkUnit, ...] = (),
+        unit_verifiers: Mapping[str, IndependentVerifier] | None = None,
     ) -> None:
         if not workspace.is_absolute() or workspace.is_symlink() or not workspace.is_dir():
             raise BuilderBoundaryError("absolute real Builder workspace required")
@@ -120,14 +134,56 @@ class TenantBuilderRuntime:
             raise BuilderBoundaryError("Builder requires a positive admitted model budget")
         if artifacts.root == root or artifacts.root.is_relative_to(root):
             raise BuilderBoundaryError("private Builder artifacts must be outside the workspace")
-        context = ScopedSourceContext(root, source_paths)
         authority.require_source_paths(source_paths)
+        self._units, self._runner = work_units, runner
+        self._unit_verifiers = dict(unit_verifiers or {})
+        self._unit_results: list[dict[str, Any]] = []
+        self._context: ScopedSourceContext | ProjectSourceContext
+        if work_units:
+            validate_work_units(authority.task, source_paths, work_units, authority.policy_ref)
+            if set(self._unit_verifiers) != {unit.unit_id for unit in work_units}:
+                raise BuilderBoundaryError("each work unit requires its exact independent verifier")
+            self._context = ProjectSourceContext(root, source_paths, work_units)
+        else:
+            if unit_verifiers is not None:
+                raise BuilderBoundaryError("unit verifiers require explicit work units")
+            self._context = ScopedSourceContext(root, source_paths)
         self._state = _private_directory(state_directory, root)
-        self._authority, self._workspace = authority, root
-        self._context, self._artifacts = context, artifacts
-        self._planner = _LivePlanner(runner, context, authority, source_paths)
+        self._authority, self._workspace, self._source_paths = authority, root, source_paths
+        self._artifacts = artifacts
         self._verifier = _LiveVerifier(verifier, authority)
         self._key = hashlib.sha256(_json([authority.grant_id])).hexdigest()
+
+    def _execute(self) -> BuilderResult:
+        task, authority = self._authority.task, self._authority
+        if not self._units:
+            return run_builder(task, workspace=self._workspace,
+                planner=_LivePlanner(self._runner, ScopedSourceContext(self._workspace, self._source_paths),
+                    authority, self._source_paths), authority=authority, verifier=self._verifier)
+        completed: set[str] = set()
+        steps: list[BuilderStep] = []
+        spent = 0
+        while len(completed) < len(self._units):
+            graph = unit_graph(self._units, authority.policy_ref, completed=frozenset(completed))
+            if not graph.ready_task_ids or spent >= task.model_budget_microusd:
+                return BuilderResult("blocked", tuple(steps), spent)
+            unit = next(unit for unit in self._units if unit.unit_id == graph.ready_task_ids[0])
+            offset = len(steps)
+            planner = _LivePlanner(self._runner, ScopedSourceContext(self._workspace, unit.source_paths),
+                authority, unit.output_paths)
+            result = run_builder(task, workspace=self._workspace,
+                planner=WorkUnitPlanner(planner, unit), authority=authority,
+                verifier=_OffsetVerifier(_LiveVerifier(self._unit_verifiers[unit.unit_id], authority), offset),
+                round_limit=unit.max_rounds, budget_limit_microusd=task.model_budget_microusd - spent)
+            spent += result.used_model_microusd
+            steps.extend(replace(step, round_number=step.round_number + offset) for step in result.steps)
+            self._unit_results.append({"unit_id": unit.unit_id, "status": result.status,
+                "actual_model_microusd": result.used_model_microusd,
+                "rounds": [step.round_number + offset for step in result.steps]})
+            if result.status != "verified":
+                return BuilderResult(result.status, tuple(steps), spent)
+            completed.add(unit.unit_id)
+        return BuilderResult("verified", tuple(steps), spent)
 
     def _bundle(
         self, result: BuilderResult, source: tuple[SourceSnapshot, ...], seal: Verification,
@@ -145,6 +201,10 @@ class TenantBuilderRuntime:
             "steps": [asdict(step) for step in result.steps], "delivery_verification": asdict(seal),
             "files": [{"path": item.path, "sha256": item.sha256} for item in source],
         }
+        if self._units:
+            manifest["schema_version"] = "foundry.builder-delivery.v2"
+            manifest["work_units"] = unit_definitions(self._units)
+            manifest["work_unit_results"] = self._unit_results
         target = io.BytesIO()
         with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_DEFLATED) as archive:
             entries = [(item.path, item.content.encode("utf-8"))
@@ -171,11 +231,12 @@ class TenantBuilderRuntime:
                 "schema_version": "foundry.builder-attempt.v1",
                 "execution_grant_id": authority.grant_id,
                 "task_sha256": hashlib.sha256(_json(asdict(task))).hexdigest(),
+                "configuration_sha256": hashlib.sha256(_json({"source_paths": self._source_paths,
+                    "work_units": unit_definitions(self._units)})).hexdigest(),
             })
         except FileExistsError:
             raise BuilderBoundaryError("Builder grant already attempted; explicit recovery required") from None
-        result = run_builder(task, workspace=self._workspace, planner=self._planner,
-            authority=authority, verifier=self._verifier)
+        result = self._execute()
         artifact: ArtifactRecord | None = None
         if result.status == "verified":
             before = self._context.snapshot()

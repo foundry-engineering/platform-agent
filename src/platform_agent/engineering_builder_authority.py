@@ -82,6 +82,14 @@ class TenantBuilderAuthority:
         return self._admission.tenant_context
 
     @property
+    def policy_ref(self) -> Mapping[str, Any]:
+        """A detached view of the existing signed policy, never new authority."""
+        value = self._grant.get("policy_ref")
+        if not isinstance(value, Mapping):
+            raise BuilderBoundaryError("signed Builder policy unavailable")
+        return deepcopy(dict(value))
+
+    @property
     def grant_id(self) -> str:
         value = self._grant.get("grant_id")
         if not isinstance(value, str):

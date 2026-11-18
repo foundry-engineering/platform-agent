@@ -160,3 +160,63 @@ This is bounded project-file support: each work unit still carries at most 16
 source snapshots, eight output files per model round and 32 KiB of total source
 context. Larger platforms require separately admitted work units; this change
 does not establish unrestricted project generation or a production release.
+
+## Coordinated work units in one approved job
+
+The optional `foundry.core-builder-profile.v2` operator profile replaces
+`sourcePaths` with `workUnits`. Every other top-level field is unchanged. It
+uses the existing Core job, immutable Builder task, signed Execution Grant,
+shared PostgreSQL cost envelope, scanner and final private output projection.
+Work units are operational subdivisions, not new canonical child jobs or new
+approvals. Their instructions and dependencies come from the trusted operator
+profile, never from a model response.
+
+Each work-unit object contains exactly these fields:
+
+| Field | Meaning |
+| --- | --- |
+| unitId | Unique lowercase identifier for this operational unit. |
+| objective | Bounded task data, within the existing root goal and authority. |
+| sourcePaths | At most 16 explicit project files, including dependencies and missing output snapshots. |
+| outputPaths | At most eight sourcePaths entries this unit may replace. |
+| dependencies | Unit IDs whose independently checked results must exist first. |
+| maxRounds | Attempt allowance; the sum across units cannot exceed the original task's max_rounds. |
+| checkIds | IDs of existing fixed checks in the root sandbox profile. |
+
+The existing task-graph evaluator determines execution order. Cycles, unknown
+dependencies, duplicated output ownership, file/directory aliases, undeclared
+producer dependencies and excess total rounds fail before model dispatch. A
+unit may read an earlier dependency's file but cannot write it. The existing
+signed grant must cover all configured source paths; work units create no
+additional authority.
+
+Every unit uses a fresh source snapshot and the existing signed Builder repair
+loop. The original immutable task is retained. Only its round count and
+remaining total model budget are narrowed for each unit. A failed unit prevents
+its dependents from starting. All actual rounds remain in the same durable
+Core/Runner accounting session, with distinct admitted invocation IDs and
+globally numbered independent verification evidence.
+
+After all units pass, the runtime snapshots every explicit project file in
+bounded groups, runs all root integration checks and rejects any changed or
+missing snapshot. It emits one `foundry.builder-delivery.v2` ZIP manifest with
+work-unit definitions/results, all step receipts, total usage and exact file
+hashes. The legacy profile continues producing its v1 manifest. No per-unit
+customer completion or intermediate delivery is published. The original grant
+is consumed once; a crash still requires explicit reconciliation and fresh
+approved authority, with no automatic repeat of spent work.
+
+The acceptance fixture builds 24 files in three dependent units. Its native
+Docker checks execute the shared SQL migration, tenant-isolated service and
+application entry point. The PostgreSQL session case traverses the real model
+HTTP handler, signed Runner, durable settlements, actual DOP mutations and
+final scanned ZIP projection. Inference and Core/storage counterparties in
+that specific test are controlled fixtures. The existing separate Qwen test
+continues to require actual model inference.
+
+Operating bounds remain explicit: at most six units and six total admitted
+model calls per root task, 16 source snapshots and 32 KiB per request, eight
+output files per model response and a 256 KiB final ZIP. This enables larger
+compositions within one job; automatic decomposition of arbitrary large
+repositories and complete customer-scale project generation remain separate
+acceptance targets.

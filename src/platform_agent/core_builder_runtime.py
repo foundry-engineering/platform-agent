@@ -28,6 +28,7 @@ from foundry_runner.project_execution_bridge import (
 )
 
 from .artifact_store import ContentAddressedArtifactStore
+from .builder_work_units import BuilderWorkUnit
 from .core_execution_authorizer import ArtifactWorkerBinding
 from .engineering_builder_authority import TenantBuilderAuthority
 from .engineering_builder_runtime import BuilderDeliveryResult, TenantBuilderRuntime
@@ -198,6 +199,7 @@ class CoreBuilderConfiguration:
     workspace: Path
     state_directory: Path
     maximum_seconds: int = 600
+    work_units: tuple[BuilderWorkUnit, ...] = ()
 
 
 class CoreBuilderWorker:
@@ -206,10 +208,12 @@ class CoreBuilderWorker:
                  authority_factory: AuthorityFactory, worker_factory: WorkerFactory,
                  verifier: IndependentVerifier, artifacts: ContentAddressedArtifactStore,
                  tenant_context: Callable[[], TenantContext], skill_id: str, skill_contract_sha256: str,
-                 clock: Callable[[], datetime] = lambda: datetime.now(UTC)) -> None:
+                 clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+                 unit_verifiers: Mapping[str, IndependentVerifier] | None = None) -> None:
         self._control, self._config = control, configuration
         self._authority_factory, self._worker_factory = authority_factory, worker_factory
         self._verifier, self._artifacts = verifier, artifacts
+        self._unit_verifiers = unit_verifiers
         self._context, self._skill, self._contract = tenant_context, skill_id, skill_contract_sha256
         self._clock = clock
 
@@ -238,7 +242,8 @@ class CoreBuilderWorker:
                 factory=self._worker_factory, checkpoint=authority.checkpoint)
             completed = TenantBuilderRuntime(authority=authority, workspace=config.workspace,
                 source_paths=config.source_paths, runner=model, verifier=self._verifier,
-                artifacts=self._artifacts, state_directory=config.state_directory).run()
+                artifacts=self._artifacts, state_directory=config.state_directory,
+                work_units=config.work_units, unit_verifiers=self._unit_verifiers).run()
             model.publish(completed, self._artifacts, authority.context)
             return True
         except Exception:
