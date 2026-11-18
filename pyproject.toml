@@ -13,7 +13,7 @@ dependencies = [
 
 [project.optional-dependencies]
 integration = [
-  "engineering-agent @ git+https://github.com/foundry-engineering/engineering-agent.git@9dfaaa55f52aa5c6415579e433905cf00836b501",
+  "engineering-agent @ git+https://github.com/foundry-engineering/engineering-agent.git@b7c24658d6cecad6e0eb37678ad30a678ea1b1e4",
 ]
 worker = [
   "foundry-runners @ git+https://github.com/foundry-engineering/foundry-runners.git@66f3bad6600b91d3e72653069b77d0ae79e67119",

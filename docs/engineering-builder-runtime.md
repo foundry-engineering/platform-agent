@@ -231,3 +231,11 @@ arithmetic and tenant-preserving invoice output. The same PostgreSQL session
 accounts for every actual inference and permits one final v2 ZIP only after
 both units and the complete integration check pass. The test uses isolated
 Core/storage counterparts; its model responses have no fixture fallback.
+
+The first native multi-unit model attempts exposed checksum transcription
+failures. The accepted source-aware model contract asks for paths and full
+source only; Engineering derives omitted overwrite preconditions from the
+verified request snapshots. Explicit wrong/null hashes remain rejected, and
+actual file changes after a snapshot still prevent execution. The isolated
+multi-unit model profile explicitly allows up to 512 output tokens; the
+existing single-file acceptance retains its 192-token profile.
