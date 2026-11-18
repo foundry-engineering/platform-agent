@@ -220,3 +220,14 @@ output files per model response and a 256 KiB final ZIP. This enables larger
 compositions within one job; automatic decomposition of arbitrary large
 repositories and complete customer-scale project generation remain separate
 acceptance targets.
+
+### Real-model work-unit acceptance
+
+The native live-model step also requires `live_units`: two dependent units over
+seeded pricing and invoice bugs. Actual Qwen inference must repair the price
+calculation first, then repair the invoice module while retaining the already
+verified pricing input. The trusted Docker checks exercise exact integer
+arithmetic and tenant-preserving invoice output. The same PostgreSQL session
+accounts for every actual inference and permits one final v2 ZIP only after
+both units and the complete integration check pass. The test uses isolated
+Core/storage counterparts; its model responses have no fixture fallback.

@@ -218,7 +218,7 @@ def live_coding_runtime(tmp_path):
         yield runtime
 
 
-@pytest.mark.parametrize("sandbox", ["unit", "docker", "project", "live"])
+@pytest.mark.parametrize("sandbox", ["unit", "docker", "project", "live", "live_units"])
 def test_core_builder_runs_metered_model_and_final_scanned_zip(database, tmp_path, monkeypatch, sandbox, request):
     """Signed Builder with actual persistence and optional real model and Docker."""
     import io
@@ -233,20 +233,26 @@ def test_core_builder_runs_metered_model_and_final_scanned_zip(database, tmp_pat
     from platform_agent.core_builder_runtime import CoreBuilderConfiguration, CoreBuilderWorker
     from platform_agent.grant_signing import ExecutionGrantSigner, sign_execution_grant
     from builder_runtime_fixture import Harness as CodeHarness, IMAGE
-    if sandbox == "live" and not os.environ.get("FOUNDRY_BUILDER_MODEL_ASSETS"):
+    if sandbox in {"live", "live_units"} and not os.environ.get("FOUNDRY_BUILDER_MODEL_ASSETS"):
         pytest.skip("live model weights are explicitly configured in acceptance")
     if sandbox in {"docker", "project"} and os.environ.get("FOUNDRY_BUILDER_REAL_DOCKER") != "1":
         pytest.skip("actual Docker execution is mandatory in native integration")
-    live = sandbox == "live"
+    live = sandbox in {"live", "live_units"}
+    live_units = sandbox == "live_units"
     project = sandbox == "project"
     from work_unit_fixture import FILES, PARTS, PATHS, UNITS, assigned_unit, verifiers as project_verifiers
     h = Harness(tmp_path, monkeypatch)
     if live:
-        h.config = replace(h.config, max_input_tokens=4096, max_output_tokens=192)
+        h.config = replace(h.config, max_input_tokens=4096, max_output_tokens=256 if live_units else 192)
     elif project:
         h.config = replace(h.config, max_input_tokens=4096, max_output_tokens=3072)
     prepare(h, database)
     objective = (
+        "Follow the current work-unit outputPaths exactly; repair ONLY its output file. "
+        "Keep signatures. src/pricing.py: total_cents(lines) sums price TIMES quantity. "
+        "src/orders.py: invoice(tenant, lines) returns {'tenant': tenant, 'amount': total_cents(lines)}. "
+        "Use 'from pricing import total_cents' in orders.py. No comments or docstrings."
+        if live_units else
         "Repair src/app.py. Keep the typed total_cents(lines) signature. "
         "Return the sum of price TIMES quantity for each pair. Empty input totals 0. "
         "Use one return statement, no comments or docstrings."
@@ -262,7 +268,8 @@ def test_core_builder_runs_metered_model_and_final_scanned_zip(database, tmp_pat
     snapshot = h.tenants.snapshot(h.config.tenant_id, h.config.project_id, code.repo)
     code.task = replace(code.task, tenant_id=h.config.tenant_id, project_id=h.config.project_id,
         cell_id=snapshot.context.cell_id,
-        goal=h.job.objective, model_budget_microusd=h.job.provider_budget_microusd)
+        goal=h.job.objective, model_budget_microusd=h.job.provider_budget_microusd,
+        max_rounds=4 if live_units else code.task.max_rounds)
     grant = {key: value for key, value in code.grant.items() if key != "signatures"}
     grant["tenant_context"] = snapshot.context.as_dict()
     grant["agent_id"] = h.config.canonical_agent_id
@@ -396,9 +403,49 @@ class OrderTotals(unittest.TestCase):
     verifier = DockerSandboxVerifier(workspace=code.workspace, evidence_dir=evidence,
         profile=TrustedSandboxProfile(image=IMAGE, checks=(TrustedCheck('python-unittest',
             ('/usr/local/bin/python','-B','-m','unittest','discover','-s','/workspace/tests')),)))
+    live_paths, live_work_units = (), ()
+    if live_units:
+        from platform_agent.builder_work_units import BuilderWorkUnit
+
+        source = code.workspace / "src/orders.py"
+        (code.workspace / "src/app.py").unlink()
+        source.parent.mkdir(mode=0o755, exist_ok=True)
+        (code.workspace / "src/pricing.py").write_text(
+            "def total_cents(lines):\n    return sum(price + quantity for price, quantity in lines)\n")
+        source.write_text("from pricing import total_cents\ndef invoice(tenant, lines):\n"
+            "    return {'tenant': 'shared', 'amount': total_cents(lines)}\n")
+        original = source.read_bytes()
+        (tests / "test_app.py").unlink()
+        (tests / "test_pricing.py").write_text(
+            "import sys,unittest\nsys.path.insert(0,'/workspace/src')\nfrom pricing import total_cents\n"
+            "class Pricing(unittest.TestCase):\n def test_amount(self):\n"
+            "  self.assertEqual(total_cents([(145,3),(80,2),(500,0)]),595)\n"
+            "  self.assertEqual(total_cents([]),0)\n"
+            "  self.assertEqual(total_cents([(10**30,13)]),13*10**30)\n")
+        (tests / "test_orders.py").write_text(
+            "import sys,unittest\nsys.path.insert(0,'/workspace/src')\nfrom orders import invoice\n"
+            "class Invoices(unittest.TestCase):\n def test_tenant(self):\n"
+            "  self.assertEqual(invoice('tenant-a',[(145,3),(80,2)]),{'tenant':'tenant-a','amount':595})\n"
+            "  self.assertEqual(invoice('tenant-b',[]),{'tenant':'tenant-b','amount':0})\n")
+        live_paths = ("src/orders.py", "src/pricing.py")
+        live_work_units = (
+            BuilderWorkUnit("pricing", "Repair ONLY src/pricing.py; multiply price by quantity",
+                ("src/pricing.py",), ("src/pricing.py",), (), 2, ("pricing-check",)),
+            BuilderWorkUnit("invoices", "Repair ONLY src/orders.py; preserve the supplied tenant and use total_cents",
+                live_paths, ("src/orders.py",), ("pricing",), 2, ("invoices-check",)),
+        )
+        checks = tuple(TrustedCheck(check_id, ("/usr/local/bin/python", "-B", "-m", "unittest",
+            "discover", "-s", "/workspace/tests", "-p", pattern))
+            for check_id, pattern in (("pricing-check", "test_pricing.py"), ("invoices-check", "test_orders.py")))
+        verifier = DockerSandboxVerifier(workspace=code.workspace, evidence_dir=evidence,
+            profile=TrustedSandboxProfile(image=IMAGE, checks=checks))
+        live_verifiers = {unit.unit_id: DockerSandboxVerifier(workspace=code.workspace, evidence_dir=evidence,
+            profile=TrustedSandboxProfile(image=IMAGE,
+                checks=tuple(check for check in checks if check.check_id in unit.check_ids)))
+            for unit in live_work_units}
     if sandbox == 'unit':
         verifier = code.verifier
-    unit_verifiers = None
+    unit_verifiers = live_verifiers if live_units else None
     if project:
         verifier, unit_verifiers = project_verifiers(code.workspace, evidence, docker=True)
     try:
@@ -407,8 +454,8 @@ class OrderTotals(unittest.TestCase):
             assert not baseline.passed and baseline.evidence_refs
         worker = CoreBuilderWorker(control=control,
             configuration=CoreBuilderConfiguration(code.task, h.config, h.job.work_node_id,
-                PATHS if project else ('src/app.py',), code.workspace, code.state,
-                work_units=UNITS if project else ()),
+                PATHS if project else live_paths if live_units else ('src/app.py',), code.workspace, code.state,
+                work_units=UNITS if project else live_work_units),
             authority_factory=lambda check: code.authority(execution_checkpoint=check), worker_factory=factory,
             verifier=verifier, artifacts=code.artifacts,
             tenant_context=lambda: h.admissions.current_context(h.config.tenant_id,h.config.project_id),
@@ -418,16 +465,23 @@ class OrderTotals(unittest.TestCase):
         assert len([x for x in peers.events if x.get('type') == 'artifact']) == 1
         assert peers.events[-1]['outcome'] == 'completed'
         with zipfile.ZipFile(io.BytesIO(peers.objects[peers.current]["content"])) as archive:
-            final = archive.read("src/main.py" if project else "src/app.py")
+            final = archive.read("src/main.py" if project else "src/orders.py" if live_units else "src/app.py")
             manifest = json.loads(archive.read("builder-result.json"))
+            if live_units:
+                assert set(archive.namelist()) == {*live_paths, "builder-result.json"}
+                assert manifest["files"] == [{"path": path, "sha256": hashlib.sha256(archive.read(path)).hexdigest()}
+                    for path in live_paths]
+                assert manifest["schema_version"] == "foundry.builder-delivery.v2"
+                assert [unit["unit_id"] for unit in manifest["work_unit_results"]] == ["pricing", "invoices"]
             if project:
                 assert set(archive.namelist()) == {*FILES, "builder-result.json"}
                 assert all(archive.read(path) == content.encode() for path, content in FILES.items())
         rounds = len(manifest["steps"])
         assert len(peers.uploads) == rounds + 1
         assert manifest["delivery_verification"]["passed"] is True
-        assert manifest["files"] == ([{"path": path, "sha256": hashlib.sha256(FILES[path].encode()).hexdigest()}
-            for path in PATHS] if project else [{"path": "src/app.py", "sha256": hashlib.sha256(final).hexdigest()}])
+        if not live_units:
+            assert manifest["files"] == ([{"path": path, "sha256": hashlib.sha256(FILES[path].encode()).hexdigest()}
+                for path in PATHS] if project else [{"path": "src/app.py", "sha256": hashlib.sha256(final).hexdigest()}])
         if project:
             assert manifest["schema_version"] == "foundry.builder-delivery.v2"
             assert len(manifest["work_unit_results"]) == inference.calls == rounds == 3
