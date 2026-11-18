@@ -12,7 +12,7 @@ from test_core_worker_service import write
 from builder_runtime_fixture import IMAGE, link_core_code_authority
 
 
-@pytest.mark.parametrize("version", ["v1", "v2"])
+@pytest.mark.parametrize("version", ["v1", "v2", "v3"])
 def test_real_private_profile_builds_actual_core_builder_without_model_or_signing(tmp_path, monkeypatch, version):
     h = Harness(tmp_path, monkeypatch)
     root = tmp_path / 'code'
@@ -64,6 +64,14 @@ def test_real_private_profile_builds_actual_core_builder_without_model_or_signin
         profile["workUnits"] = [{"unitId": "unit_primary", "objective": code.task.goal,
             "sourcePaths": ["src/app.py"], "outputPaths": ["src/app.py"], "dependencies": [],
             "maxRounds": 3, "checkIds": ["python-unittest"]}]
+    if version == "v3":
+        (code.workspace / "src").mkdir(exist_ok=True)
+        (code.workspace / "src/app.py").write_text("def main(): return 0\n")
+        profile["schemaVersion"] = "foundry.core-builder-profile.v3"
+        profile.pop("sourcePaths")
+        profile["autoPlan"] = {"schemaVersion": "foundry.builder-auto-plan.v1",
+            "sourcePaths": ["src/app.py"], "fileChecks": {"src/app.py": ["python-unittest"]},
+            "maxFilesPerUnit": 1, "maxRoundsPerUnit": 3, "moduleAliases": {}}
     path = tmp_path / 'builder.json'
     write(path, json.dumps(profile).encode())
     assert isinstance(load_builder(path), CoreBuilderWorker)

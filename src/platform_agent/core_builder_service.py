@@ -19,6 +19,7 @@ from foundry_runner.execution_provider import ExecutionWorker
 from .admitted_scheduler import AdmittedSchedule
 from .artifact_store import ContentAddressedArtifactStore
 from .builder_work_units import BuilderWorkUnit, validate_work_units
+from .builder_auto_plan import AutoPlanSpecification, compile_automatic_plan
 from .control_plane import DispatchPlan, TaskAssignment
 from .core_builder_runtime import CoreBuilderConfiguration, CoreBuilderWorker
 from .core_execution_authorizer import ArtifactWorkerBinding
@@ -81,11 +82,17 @@ def load_builder(profile_path: Path) -> CoreBuilderWorker:
         "sourcePaths", "stateDirectory", "artifactStoreRoot", "verificationEvidenceDirectory",
         "sandbox", "maximumSeconds"}
     version = data.get("schemaVersion")
-    expected_keys = keys if version == "foundry.core-builder-profile.v1" else keys - {"sourcePaths"} | {"workUnits"}
-    if set(data) != expected_keys or version not in {"foundry.core-builder-profile.v1", "foundry.core-builder-profile.v2"}:
+    scope_fields = {"foundry.core-builder-profile.v1": "sourcePaths",
+        "foundry.core-builder-profile.v2": "workUnits", "foundry.core-builder-profile.v3": "autoPlan"}
+    if version not in scope_fields or set(data) != keys - {"sourcePaths"} | {scope_fields[version]}:
         raise WorkerConfigurationError("exact Core Builder operational profile required")
     work_units: tuple[BuilderWorkUnit, ...] = ()
-    if version == "foundry.core-builder-profile.v2":
+    automatic_plan = None
+    specification = None
+    if version == "foundry.core-builder-profile.v3":
+        specification = AutoPlanSpecification.from_payload(data["autoPlan"])
+        source_paths = tuple(sorted(specification.source_paths))
+    elif version == "foundry.core-builder-profile.v2":
         if not isinstance(data["workUnits"], list) or not 1 <= len(data["workUnits"]) <= 6:
             raise WorkerConfigurationError("bounded explicit Builder work units required")
         work_units = tuple(BuilderWorkUnit.from_payload(item) for item in data["workUnits"])
@@ -123,6 +130,23 @@ def load_builder(profile_path: Path) -> CoreBuilderWorker:
     control = ControlPlaneHttpClient(base_url=runtime["coreOrigin"], tenant_id=binding.tenant_id,
         workspace_id=binding.workspace_id, token_supplier=_secret(runtime["coreTokenFile"]),
         project_id=binding.project_id, agent_id=binding.core_agent_id, work_node_id=data["coreWorkNodeId"])
+    # Validate the configured execution identity and existing signed grant before
+    # claiming a Core job. The online Core lease is attached after that claim.
+    def authority_factory(checkpoint: Callable[[], None]) -> TenantBuilderAuthority:
+        return TenantBuilderAuthority(task=task, admission=admission,
+            authority_state=SQLiteAuthorityStateProvider(tenants), trusted_grant_keys=trusted_keys,
+            workspace_signers=workspace_signers, witness_signers=witness_signers,
+            execution_checkpoint=checkpoint)
+    preflight = authority_factory(lambda: None)
+    if preflight.agent_id != binding.canonical_agent_id:
+        raise WorkerConfigurationError("Builder Execution Grant authorizes a different canonical agent")
+    preflight.require_source_paths(source_paths)
+    if specification is not None:
+        automatic_plan = compile_automatic_plan(specification=specification,
+            authority=preflight, workspace=Path(data["workspace"]))
+        work_units = automatic_plan.units
+    if work_units:
+        validate_work_units(task, source_paths, work_units, preflight.policy_ref)
     sandbox = dict(data["sandbox"])
     sandbox["checks"] = tuple(TrustedCheck(item["check_id"], tuple(item["argv"])) for item in sandbox["checks"])
     sandbox_profile = TrustedSandboxProfile(**sandbox)
@@ -139,20 +163,7 @@ def load_builder(profile_path: Path) -> CoreBuilderWorker:
             for unit in work_units}
     artifacts = ContentAddressedArtifactStore(Path(data["artifactStoreRoot"]), tenants)
     config = CoreBuilderConfiguration(task, binding, data["coreWorkNodeId"], source_paths,
-        Path(data["workspace"]), Path(data["stateDirectory"]), data["maximumSeconds"], work_units)
-    # Validate the configured execution identity and existing signed grant before
-    # claiming a Core job. The online Core lease is attached after that claim.
-    def authority_factory(checkpoint: Callable[[], None]) -> TenantBuilderAuthority:
-        return TenantBuilderAuthority(task=task, admission=admission,
-            authority_state=SQLiteAuthorityStateProvider(tenants), trusted_grant_keys=trusted_keys,
-            workspace_signers=workspace_signers, witness_signers=witness_signers,
-            execution_checkpoint=checkpoint)
-    preflight = authority_factory(lambda: None)
-    if preflight.agent_id != binding.canonical_agent_id:
-        raise WorkerConfigurationError("Builder Execution Grant authorizes a different canonical agent")
-    preflight.require_source_paths(source_paths)
-    if work_units:
-        validate_work_units(task, source_paths, work_units, preflight.policy_ref)
+        Path(data["workspace"]), Path(data["stateDirectory"]), data["maximumSeconds"], work_units, automatic_plan)
     def worker_factory(context: Mapping[str, Any], tag: str, ceiling: int | None,
                        envelope: Mapping[str, Any]) -> ExecutionWorker:
         current = _document(str(runtime_path), 64 * 1024)
