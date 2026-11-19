@@ -252,11 +252,9 @@ def test_core_builder_runs_metered_model_and_final_scanned_zip(database, tmp_pat
     elif project:
         h.config = replace(h.config, max_input_tokens=4096, max_output_tokens=3072)
     prepare(h, database)
+    from polyglot_acceptance import POLYGLOT_OBJECTIVE
     objective = (
-        "Repair weighted totals in src/app.py, src/total.mjs and src/total.go: sum unit price TIMES quantity. "
-        "Keep Python total_cents(lines) for integer pairs, JavaScript export function totalCents(lines), "
-        "and Go package main func totalCents(lines [][2]int64) int64. Preserve exact integer arithmetic. "
-        "Output exactly these three complete minimal files, no comments or docstrings."
+        POLYGLOT_OBJECTIVE
         if polyglot else
         "Repair the tenant billing code according to the current approved work-unit data. "
         "Return exactly its outputPaths, never read-only dependency files. "
@@ -477,7 +475,8 @@ class OrderTotals(unittest.TestCase):
             for unit in live_work_units}
     if polyglot:
         from engineering_agent.sandbox_matrix import DockerSandboxMatrixVerifier
-        from polyglot_acceptance import configure_polyglot
+        from polyglot_acceptance import configure_polyglot, report_model_errors
+        report_model_errors(monkeypatch)
         live_paths, matrix = configure_polyglot(code.workspace, IMAGE)
         verifier = DockerSandboxMatrixVerifier(workspace=code.workspace, evidence_dir=evidence, matrix=matrix)
     if sandbox == 'unit':

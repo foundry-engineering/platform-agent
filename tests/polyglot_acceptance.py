@@ -7,6 +7,14 @@ from pathlib import Path
 from engineering_agent.sandbox_matrix import TrustedSandboxMatrix
 from engineering_agent.sandbox_verifier import TrustedCheck, TrustedSandboxProfile
 
+POLYGLOT_OBJECTIVE = (
+    "Repair weighted totals in src/app.py, src/total.mjs and src/total.go: sum unit price TIMES quantity. "
+    "Keep Python total_cents(lines) for integer pairs, JavaScript export function totalCents(lines), "
+    "and Go package main func totalCents(lines [][2]int64) int64. Preserve exact integer arithmetic. "
+    "Output exactly these three complete minimal files, no comments or docstrings."
+)
+
+
 NODE = (
     "docker.io/library/node@sha256:9d266751ca3d7fdbe651c878ffd5ad0a42fed49a18c283509267c97f025b7496"
 )
@@ -36,7 +44,7 @@ def configure_polyglot(
         (
             TrustedSandboxProfile(
                 image=python_image,
-                diagnostic_bytes=1200,
+                diagnostic_bytes=384,
                 timeout_seconds=60,
                 checks=(
                     TrustedCheck(
@@ -55,7 +63,7 @@ def configure_polyglot(
             ),
             TrustedSandboxProfile(
                 image=NODE,
-                diagnostic_bytes=1200,
+                diagnostic_bytes=384,
                 timeout_seconds=60,
                 checks=(
                     TrustedCheck(
@@ -65,8 +73,8 @@ def configure_polyglot(
             ),
             TrustedSandboxProfile(
                 image=GO,
-            compiled_execution=True,
-                diagnostic_bytes=1200,
+                compiled_execution=True,
+                diagnostic_bytes=384,
                 timeout_seconds=60,
                 memory_mb=1024,
                 pids_limit=128,
@@ -92,3 +100,19 @@ def configure_polyglot(
         )
     )
     return ("src/app.py", "src/total.go", "src/total.mjs"), matrix
+
+
+def report_model_errors(monkeypatch) -> None:
+    """Expose only the isolated test server's bounded public error response."""
+    import http.client
+
+    original = http.client.HTTPConnection.getresponse
+
+    def response(connection):
+        result = original(connection)
+        if not 200 <= result.status < 300:
+            body = result.read(4096).decode("utf-8", errors="replace")
+            raise AssertionError(f"isolated model response HTTP {result.status}: {body}")
+        return result
+
+    monkeypatch.setattr(http.client.HTTPConnection, "getresponse", response)
