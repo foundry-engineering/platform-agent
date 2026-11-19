@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from engineering_agent.builder import (
-    BuilderBoundaryError, BuilderResult, BuilderStep, BuilderTask, IndependentVerifier,
+    BuilderBoundaryError, BuilderInvocation, BuilderResult, BuilderStep, BuilderTask, IndependentVerifier,
     PlanProposal, Verification, run_builder,
 )
 from engineering_agent.builder_runner import AdmittedRunnerModel, RunnerBudgetedPlanner
@@ -175,11 +175,12 @@ class TenantBuilderRuntime:
                 diagnose_first=self._diagnose_first)
         completed: set[str] = set()
         steps: list[BuilderStep] = []
+        invocations: list[BuilderInvocation] = []
         spent = 0
         while len(completed) < len(self._units):
             graph = unit_graph(self._units, authority.policy_ref, completed=frozenset(completed))
             if not graph.ready_task_ids or spent >= task.model_budget_microusd:
-                return BuilderResult("blocked", tuple(steps), spent)
+                return BuilderResult("blocked", tuple(steps), spent, model_invocations=tuple(invocations))
             unit = next(unit for unit in self._units if unit.unit_id == graph.ready_task_ids[0])
             offset = len(steps)
             planner = _LivePlanner(self._runner, ScopedSourceContext(self._workspace, unit.source_paths),
@@ -190,6 +191,8 @@ class TenantBuilderRuntime:
                 round_limit=unit.max_rounds, budget_limit_microusd=task.model_budget_microusd - spent,
                 diagnose_first=self._diagnose_first)
             spent += result.used_model_microusd
+            invocations.extend(replace(call, round_number=call.round_number + offset)
+                for call in result.model_invocations)
             steps.extend(replace(step, round_number=step.round_number + offset) for step in result.steps)
             self._unit_results.append({"unit_id": unit.unit_id, "status": result.status,
                 "actual_model_microusd": result.used_model_microusd,
@@ -197,9 +200,9 @@ class TenantBuilderRuntime:
             if result.initial_verification is not None:
                 self._unit_results[-1]["initial_verification"] = asdict(result.initial_verification)
             if result.status != "verified":
-                return BuilderResult(result.status, tuple(steps), spent)
+                return BuilderResult(result.status, tuple(steps), spent, model_invocations=tuple(invocations))
             completed.add(unit.unit_id)
-        return BuilderResult("verified", tuple(steps), spent)
+        return BuilderResult("verified", tuple(steps), spent, model_invocations=tuple(invocations))
 
     def _bundle(
         self, result: BuilderResult, source: tuple[SourceSnapshot, ...], seal: Verification,
@@ -214,7 +217,9 @@ class TenantBuilderRuntime:
             "base_commit_sha": task.workspace_base_commit_sha,
             "execution_grant_id": self._authority.grant_id,
             "status": "verified", "actual_model_microusd": result.used_model_microusd,
-            "steps": [asdict(step) for step in result.steps], "delivery_verification": asdict(seal),
+            "steps": [asdict(step) for step in result.steps],
+            "model_invocations": [asdict(call) for call in result.model_invocations],
+            "delivery_verification": asdict(seal),
             "files": [{"path": item.path, "sha256": item.sha256} for item in source],
         }
         if result.initial_verification is not None:
@@ -286,6 +291,7 @@ class TenantBuilderRuntime:
         _append(self._state, self._key + ".outcome.json", {
             "schema_version": "foundry.builder-outcome.v1", "status": result.status,
             "actual_model_microusd": result.used_model_microusd,
+            "model_invocations": [asdict(call) for call in result.model_invocations],
             "artifact_id": artifact.artifact_id if artifact is not None else None,
         })
         return BuilderDeliveryResult("run_" + self._key[:32], result, artifact)

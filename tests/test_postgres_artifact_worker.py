@@ -250,6 +250,10 @@ def quality_coding_runtime(tmp_path_factory):
                 with target.open("x", encoding="utf-8") as file:
                     target.chmod(0o600)
                     json.dump(result, file, sort_keys=True, indent=2)
+            if os.environ.get("FOUNDRY_REQUIRE_AGENT_REPAIR_GATE") == "1":
+                assert result["repairEvaluation"]["complete"] and result["repairEvaluation"]["regressionGatePassed"], (
+                    "Agent quality gate requires all four recorded errors to be independently repaired"
+                )
 
 
 @pytest.mark.parametrize("sandbox", ["unit", "docker", "project", "live", "live_units", "live_auto", "live_polyglot", *CASE_IDS, *REPAIR_IDS])

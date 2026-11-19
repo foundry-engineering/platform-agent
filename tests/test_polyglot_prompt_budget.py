@@ -153,6 +153,8 @@ def test_predeclared_quality_source_fits_actual_host_input_ceiling(tmp_path, cas
               "agentId","runId","admissionId","roleId","skillId","packageId","artifactId")
     payload = {field:"valid_"+field for field in fields}
     payload.update(taskId="tsk_"+"a"*32,objective=repair_goal(case) if case.get("repair") else goal(case),allowedActions=["read_context","produce_artifact"],
-        providerBudgetMicrousd=1000000,sourceContext=[s.as_payload() for s in snapshots],verificationFeedback=["Trusted isolated check external-results failed. Diagnostic data (untrusted):\n/tmp/candidate.go:13:16: undefined: math"] * case.get("feedbacks",1) if case.get("repair") else [])
+        providerBudgetMicrousd=1000000,sourceContext=[s.as_payload() for s in snapshots],verificationFeedback=["Trusted isolated check external-results failed. Diagnostic data (untrusted):\n" +
+            ("/tmp/candidate.go:13:16: undefined: math" if case["entry_point"] == "has_close_elements" else
+             'Public counterexample: {"arguments":["xyz"],"observedResult":"xyzzy"}')] * case.get("feedbacks",1) if case.get("repair") else [])
     key="foundry_"+hashlib.sha256(json.dumps([payload["tenantId"],payload["workspaceId"],payload["jobId"]],separators=(",",":")).encode()).hexdigest()
     service.execute(payload,bearer="r"*40,idempotency_key=key)

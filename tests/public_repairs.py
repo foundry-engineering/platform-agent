@@ -44,12 +44,12 @@ def goal(case):
         documentation = "\n".join(line.strip()[2:].strip() for line in template.splitlines() if line.strip().startswith("//"))
         signature = next(line.strip().rstrip("{").strip() for line in template.splitlines()
             if line.strip().startswith(("func ", "function ")))
-    return (f"Fix {case['source_path']}; preserve signature/imports. No comments. Original contract:\n"
+    return (f"Repair {case['source_path']}; code only.\n"
         + signature + "\n" + documentation).rstrip()
 
 
 def configure_repair(case, workspace, evidence, private, python_image):
-    verifier = configure(case, workspace, evidence, private, python_image)
+    verifier = configure(case, workspace, evidence, private, python_image, diagnostic_inputs=True)
     (workspace / case["source_path"]).write_text(seed_for(case)["source"])
     return verifier
 
@@ -58,12 +58,21 @@ def observe(worker, *, case, code, peers, database, model_contexts, inference, e
     try:
         assert worker.run_once()
     except BuilderBoundaryError:
-        assert worker.last_attempt is not None and worker.last_attempt.execution.status == "needs_revision"
+        assert worker.last_attempt is not None and worker.last_attempt.execution.status in {"needs_revision", "blocked"}
     result = worker.last_attempt
-    assert result is not None and result.execution.status in {"verified", "needs_revision"}
+    assert result is not None and result.execution.status in {"verified", "needs_revision", "blocked"}
     steps = result.execution.steps
-    rounds = len(steps)
+    invocations = result.execution.model_invocations
+    rounds = len(invocations)
     assert 1 <= rounds <= 3 and inference.calls == 0
+    executed = tuple(call for call in invocations if call.disposition == "executed")
+    assert len(executed) == len(steps)
+    assert [call.round_number for call in executed] == [step.round_number for step in steps]
+    if result.execution.status == "blocked":
+        assert invocations[-1].disposition == "duplicate" and len(steps) == rounds-1
+        assert invocations[-1].plan_sha256 in {call.plan_sha256 for call in invocations[:-1]}
+    else:
+        assert len(steps) == rounds
     assert result.execution.initial_verification and not result.execution.initial_verification.passed
     assert len(model_contexts) == rounds
     seed = seed_for(case)
@@ -81,7 +90,8 @@ def observe(worker, *, case, code, peers, database, model_contexts, inference, e
     source = (code.workspace / case["source_path"]).read_bytes()
     source_sha = hashlib.sha256(source).hexdigest()
     oracle_sha = FunctionalOracleCommand([call["expected"] for call in case["calls"]],
-        nil_equals_empty=case["language"] == "go").commitment
+        nil_equals_empty=case["language"] == "go",
+        public_inputs=[call["arguments"] for call in case["calls"]]).commitment
     records = {"sha256:" + path.stem: json.loads(path.read_bytes()) for path in evidence.glob("*.json")}
     assert records and all(record["schema_version"] == "foundry.builder.sandbox-evidence.v3" and
         record["external_oracle_sha256"] == oracle_sha for record in records.values())
@@ -108,18 +118,21 @@ def observe(worker, *, case, code, peers, database, model_contexts, inference, e
         print("PUBLIC_REPAIR_FAILURE=" + json.dumps({"caseId":case["case_id"],
             "feedback":steps[-1].verification.feedback,"source":source.decode()[:8192]},sort_keys=True))
     with database() as db:
-        rows = db.execute("SELECT provider_id,model_or_tool_id,actual_total_microusd,input_tokens,output_tokens FROM foundry_spend_settlement").fetchall()
+        rows = db.execute("SELECT invocation_id,provider_id,model_or_tool_id,actual_total_microusd,input_tokens,output_tokens FROM foundry_spend_settlement").fetchall()
         assert len(rows) == rounds
         assert db.execute("SELECT count(*) FROM foundry_waw_invocation_claim").fetchone() == (rounds,)
         assert db.execute("SELECT reserved_paid_invocations FROM foundry_budget_scope WHERE scope_type='task'").fetchone() == (rounds,)
-    assert all(row[0] == "foundry-selfhosted" and row[1] == model_profile.model_id and min(row[2:]) > 0 for row in rows)
-    cost = sum(row[2] for row in rows)
-    assert cost == result.execution.used_model_microusd == sum(step.usage_microusd for step in steps)
+    assert all(row[1] == "foundry-selfhosted" and row[2] == model_profile.model_id and min(row[3:]) > 0 for row in rows)
+    cost = sum(row[3] for row in rows)
+    assert cost == result.execution.used_model_microusd == sum(call.usage_microusd for call in invocations)
+    assert sorted(row[3] for row in rows) == sorted(call.usage_microusd for call in invocations)
     return RepairReceipt(case["case_id"],case["language"],model_profile.model_id,model_profile.identity()["profile_sha256"],
         RUNTIME.sha256,seed["source_sha256"],source_sha,oracle_sha,result.execution.status,
-        sum(row[3] for row in rows),sum(row[4] for row in rows),cost,rounds,
-        tuple(step.verification.passed for step in steps),tuple(step.usage_microusd for step in steps),
-        tuple(sorted(records)))
+        sum(row[4] for row in rows),sum(row[5] for row in rows),cost,rounds,
+        tuple(next((step.verification.passed for step in steps if step.round_number == call.round_number), None)
+            for call in invocations),tuple(call.usage_microusd for call in invocations),
+        tuple(sorted(records)), tuple(call.usage_evidence_ref for call in invocations),
+        tuple(sorted(row[0] for row in rows)))
 
 
 def report(receipts):

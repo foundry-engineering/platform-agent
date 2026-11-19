@@ -42,6 +42,9 @@ def test_dependent_work_units_deliver_24_files_with_one_total_budget(tmp_path, d
     observed = {item.path: item for item in model.requests[1].source_context}
     assert observed["migrations/001.sql"].content == FILES["migrations/001.sql"]
     assert [step.round_number for step in result.execution.steps] == [1, 2, 3]
+    assert [call.round_number for call in result.execution.model_invocations] == [1, 2, 3]
+    assert all(call.disposition == "executed" for call in result.execution.model_invocations)
+    assert sum(call.usage_microusd for call in result.execution.model_invocations) == result.execution.used_model_microusd
     content = h.artifacts.read_bytes(h.admission.tenant_context,
         repository_id=h.repo, artifact_id=result.artifact.artifact_id)
     with zipfile.ZipFile(io.BytesIO(content)) as archive:
@@ -50,6 +53,7 @@ def test_dependent_work_units_deliver_24_files_with_one_total_budget(tmp_path, d
         manifest = json.loads(archive.read("builder-result.json"))
     assert manifest["schema_version"] == "foundry.builder-delivery.v2"
     assert manifest["actual_model_microusd"] == 3
+    assert [call["round_number"] for call in manifest["model_invocations"]] == [1, 2, 3]
     assert [item["unit_id"] for item in manifest["work_unit_results"]] == ["foundation", "service", "application"]
     assert manifest["files"] == [{"path": path, "sha256": hashlib.sha256(FILES[path].encode()).hexdigest()} for path in PATHS]
     if docker:

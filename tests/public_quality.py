@@ -71,7 +71,7 @@ def _runner(case):
         "cp /workspace/src/candidate.go /workspace/tests/runner.go /tmp/; /usr/local/go/bin/go run -p=1 /tmp/candidate.go /tmp/runner.go"]
 
 
-def configure(case, workspace, evidence, private, python_image):
+def configure(case, workspace, evidence, private, python_image, *, diagnostic_inputs=False):
     for path in (workspace / "src/app.py", workspace / "tests/test_app.py"):
         path.unlink(missing_ok=True)
     source = workspace / case["source_path"]
@@ -85,8 +85,11 @@ def configure(case, workspace, evidence, private, python_image):
     private.mkdir(mode=0o700)
     oracle = private / "oracle.json"
     oracle.touch(mode=0o600, exist_ok=False)
-    oracle.write_text(json.dumps({"schemaVersion": "foundry.functional-oracle.v1",
-        "expectedResults": [call["expected"] for call in case["calls"]], "nilEqualsEmpty": case["language"] == "go"}))
+    oracle_data = {"schemaVersion": "foundry.functional-oracle.v2" if diagnostic_inputs else "foundry.functional-oracle.v1",
+        "expectedResults": [call["expected"] for call in case["calls"]], "nilEqualsEmpty": case["language"] == "go"}
+    if diagnostic_inputs:
+        oracle_data["publicInputs"] = [call["arguments"] for call in case["calls"]]
+    oracle.write_text(json.dumps(oracle_data))
     profile = {"image": {"py": python_image, "js": NODE, "go": GO}[case["language"]],
         "checks": [{"check_id": "external-results", "argv": argv, "oracleFile": str(oracle)}],
         "timeout_seconds": 60, "memory_mb": 1024, "pids_limit": 128, "diagnostic_bytes": 1024,

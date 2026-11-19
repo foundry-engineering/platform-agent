@@ -60,8 +60,7 @@ references, per-case outcomes and actual accounted usage. `notRun` and failures
 remain visible; missing, duplicate or mixed-model cases cannot imply a complete
 passing report. An unknown model-spend or infrastructure failure aborts acceptance
 rather than being silently counted as a candidate quality failure. There are no
-automatic inference retries. The CI harness checks honest measurement even if a
-candidate fails; only `regressionGatePassed: true` means all nine observed cases
+automatic inference retries. The first-attempt evaluation records failures honestly; only `regressionGatePassed: true` means all nine observed cases
 passed. `releaseApproved` and `marketRankClaim` always remain false.
 
 The Engineering model-host profiles also prepare frozen larger GGUF candidates.
@@ -103,3 +102,22 @@ a passing repair gate. A passing earlier round cannot be followed by another
 paid attempt. These are focused regressions of known errors, not an unbiased
 benchmark or an overall product release. Original source-generation calls remain
 visible in the historical baseline report; repair costs count every new call.
+
+
+The v2 private oracle profile can explicitly declare `publicInputs`. Mismatch
+feedback includes only a public argument vector and the observed candidate
+result; expected answers stay private. Both expected results and declared public
+inputs are bound into the immutable oracle commitment. Legacy v1 remains strict
+and unchanged. Known repeated model proposals are reported as `blocked`, not as
+successful repairs or unknown infrastructure failures. All returned model calls,
+including the duplicate rejected before mutation, retain usage evidence and
+unique actual PostgreSQL settlement invocation IDs. An unexecuted duplicate has
+`round_passed: null`, and cannot pass the repair gate.
+
+
+CI requires every one of the four recorded repair cases to finish verified.
+`FOUNDRY_REQUIRE_AGENT_REPAIR_GATE=1` fails the quality step after preserving the
+full report if a repair remains blocked, incorrect, missing or incomplete. Honest
+accounting of a failure does not turn it into a successful agent result. This
+repair gate remains separate from the non-gating raw first-attempt measurement
+and from overall product release approval.

@@ -63,14 +63,19 @@ def _profile(
             oracle = json.loads(private_file(path, maximum=65536), object_pairs_hook=_unique_object)
             if (
                 not isinstance(oracle, dict)
-                or set(oracle) != {"schemaVersion", "expectedResults", "nilEqualsEmpty"}
-                or oracle["schemaVersion"] != "foundry.functional-oracle.v1"
+                or not (
+                    (set(oracle) == {"schemaVersion", "expectedResults", "nilEqualsEmpty"}
+                        and oracle["schemaVersion"] == "foundry.functional-oracle.v1")
+                    or (set(oracle) == {"schemaVersion", "expectedResults", "nilEqualsEmpty", "publicInputs"}
+                        and oracle["schemaVersion"] == "foundry.functional-oracle.v2")
+                )
             ):
                 raise WorkerConfigurationError("exact host-side functional oracle required")
             if check["check_id"] in commands:
                 raise WorkerConfigurationError("functional check identities must be unique")
             commands[check["check_id"]] = FunctionalOracleCommand(
-                oracle["expectedResults"], nil_equals_empty=oracle["nilEqualsEmpty"]
+                oracle["expectedResults"], nil_equals_empty=oracle["nilEqualsEmpty"],
+                public_inputs=oracle.get("publicInputs")
             )
 
     data: dict[str, Any] = {**value, "checks": tuple(checks)}

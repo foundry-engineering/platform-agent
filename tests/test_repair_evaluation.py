@@ -7,7 +7,7 @@ from platform_agent.repair_evaluation import RepairReceipt, repair_report
 
 def receipt(**changes):
     return replace(RepairReceipt("case-a","go","approved/model","a"*64,"b"*64,"c"*64,"d"*64,
-        "e"*64,"verified",100,50,30,2,(False,True),(10,20),("sha256:"+"f"*64,)),**changes)
+        "e"*64,"verified",100,50,30,2,(False,True),(10,20),("sha256:"+"f"*64,),("usage:first","usage:second"),("inv:first","inv:second")),**changes)
 
 
 def report(*receipts):
@@ -37,3 +37,22 @@ def test_failed_missing_duplicate_or_mixed_repairs_never_form_a_passing_report()
     with pytest.raises(ValueError):
         repair_report(seeds_sha256="1"*64,expected_cases=(("case-a","go"),("case-b","go")),
             receipts=(receipt(),receipt(case_id="case-b",profile_sha256="2"*64)))
+
+
+def test_blocked_duplicate_is_failed_and_accounts_for_the_unexecuted_paid_proposal():
+    value = report(receipt(outcome="blocked",round_passed=(False,None)))
+    assert value["complete"] and not value["regressionGatePassed"]
+    assert (value["passed"],value["failed"],value["blocked"]) == (0,1,1)
+    assert value["invocations"] == 2 and value["actualMicrousd"] == 30
+    assert not value["releaseApproved"]
+
+
+@pytest.mark.parametrize("changes",[
+    {"outcome":"blocked","round_passed":(False,False)},
+    {"outcome":"needs_revision","round_passed":(False,None)},
+    {"model_usage_evidence_refs":("usage:first",)},
+    {"settlement_invocation_ids":("same","same")},
+])
+def test_blocked_status_never_hides_missing_usage_or_reused_settlements(changes):
+    with pytest.raises(ValueError):
+        receipt(**changes)
