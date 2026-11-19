@@ -217,8 +217,13 @@ def live_coding_runtime(tmp_path, request):
     if os.environ.get("FOUNDRY_BUILDER_REAL_DOCKER") != "1":
         pytest.fail("live model acceptance requires the real Docker verifier")
     output_limit = 512 if request.node.callspec.params.get("sandbox") in {"live_units", "live_auto", "live_polyglot"} else 192
+    from engineering_agent.model_host import DEFAULT_PROFILE
+    profile = DEFAULT_PROFILE
+    if request.node.callspec.params.get("sandbox") == "live_context":
+        from source_context_acceptance import context_model_profile
+        profile = context_model_profile()
     with live_model(tmp_path / "llama", Path(os.environ["FOUNDRY_BUILDER_MODEL_ASSETS"]),
-                    max_output_tokens=output_limit) as runtime:
+                    max_output_tokens=output_limit, approved_profile=profile) as runtime:
         yield runtime
 
 
@@ -418,7 +423,9 @@ def test_core_builder_runs_metered_model_and_final_scanned_zip(database, tmp_pat
             provider_origin, secret = request.getfixturevalue("live_coding_runtime")
         model_id = MODEL_ID
         if larger_context:
-            from source_context_acceptance import reject_excess_tokens
+            from source_context_acceptance import context_model_profile, reject_excess_tokens
+            context_profile = context_model_profile()
+            model_id = context_profile.model_id
             reject_excess_tokens(provider_origin, secret, tmp_path / "llama/state/inference.sqlite3")
     else:
         model_id = "core-builder-inference-fixture"
@@ -597,7 +604,13 @@ class OrderTotals(unittest.TestCase):
             quality_receipts.append(receipt)
             print("PUBLIC_QUALITY_CASE=" + json.dumps(receipt.case_id) + ":" + receipt.outcome)
             return
-        assert worker.run_once()
+        try:
+            assert worker.run_once()
+        except Exception:
+            if larger_context:
+                from source_context_acceptance import failure_diagnostics
+                print("SOURCE_CONTEXT_FAILURE=" + json.dumps(failure_diagnostics(code.workspace, evidence), sort_keys=True))
+            raise
         assert len([x for x in peers.events if x.get('type') == 'artifact']) == 1
         assert peers.events[-1]['outcome'] == 'completed'
         with zipfile.ZipFile(io.BytesIO(peers.objects[peers.current]["content"])) as archive:
@@ -675,12 +688,13 @@ class OrderTotals(unittest.TestCase):
                 }
                 print(json.dumps(observed, sort_keys=True))
                 if larger_context and os.environ.get("FOUNDRY_CONTEXT_REPORT"):
-                    from engineering_agent.model_host import DEFAULT_PROFILE, RUNTIME
+                    from engineering_agent.model_host import RUNTIME
                     observed.update(schemaVersion="foundry.actual-source-context.v1",
-                        profile=replace(DEFAULT_PROFILE, max_output_tokens=192).identity(),
+                        profile=replace(context_profile, max_output_tokens=192).identity(),
                         runtimeSha256=RUNTIME.sha256, excessTokensRejectedBeforeClaim=True,
                         referenceUnchanged=True, privateCandidateVerified=True,
                         enterpriseReleaseApproved=False, marketRankClaim=False)
+                    print("SOURCE_CONTEXT_REPORT=" + json.dumps(observed, sort_keys=True))
                     target = Path(os.environ["FOUNDRY_CONTEXT_REPORT"])
                     with target.open("x", encoding="utf-8") as report_file:
                         target.chmod(0o600)

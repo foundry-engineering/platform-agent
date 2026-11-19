@@ -4,10 +4,13 @@ from __future__ import annotations
 import hashlib
 import http.client
 import json
+import os
 import sqlite3
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
+
+from engineering_agent.model_profiles import ModelProfile, load_model_profile
 
 OBJECTIVE = (
     "Implement repair_summary(outcomes: list[str]) -> dict[str, int] in src/app.py. "
@@ -16,6 +19,24 @@ OBJECTIVE = (
     "The allowed outcomes are the RepairReceipt outcome values in that reference. "
     "Use no imports, comments or docstrings. Output only src/app.py."
 )
+
+
+def context_model_profile() -> ModelProfile:
+    profile = load_model_profile(Path(os.environ["FOUNDRY_CONTEXT_MODEL_PROFILE"]))
+    if profile.max_input_tokens != 3072:
+        raise ValueError("source-context acceptance must retain its original input ceiling")
+    return profile
+
+
+def failure_diagnostics(workspace: Path, evidence: Path) -> dict[str, Any]:
+    source = (workspace / "src/app.py").read_bytes()
+    checks = []
+    for path in sorted(evidence.glob("*.json"))[:16]:
+        row = json.loads(path.read_bytes())
+        checks.append({key: row.get(key) for key in ("round", "check_id", "passed", "exit_code")})
+    return {"sourceSha256": hashlib.sha256(source).hexdigest(),
+        "publicFixtureSource": source[:4096].decode("utf-8", errors="replace"),
+        "checks": sorted(checks, key=lambda row: (row["round"], row["check_id"]))}
 
 
 def configure(workspace: Path) -> bytes:

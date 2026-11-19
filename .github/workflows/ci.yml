@@ -72,30 +72,6 @@ jobs:
           FOUNDRY_PLATFORM_TEST_DATABASE_URL: postgres://platform_ci:platform_ci_test_only@127.0.0.1:5432/platform_authority_test
           FOUNDRY_RUNNER_SOURCE_ROOT: ${{ github.workspace }}/.integration/runner
         run: uv run pytest tests/test_postgres_artifact_worker.py -vv
-      - name: Fetch checksum-pinned coding model and CPU runtime
-        if: github.event_name != 'push'
-        timeout-minutes: 7
-        run: |
-          uv run foundry-model-host fetch-assets "$RUNNER_TEMP/foundry-coding-model"
-      - name: Managed model host through signed worker, PostgreSQL and Docker
-        if: github.event_name != 'push'
-        env:
-          FOUNDRY_PLATFORM_PG_TEST: '1'
-          FOUNDRY_BUILDER_REAL_DOCKER: '1'
-          FOUNDRY_PLATFORM_TEST_DATABASE_URL: postgres://platform_ci:platform_ci_test_only@127.0.0.1:5432/platform_authority_test
-          FOUNDRY_RUNNER_SOURCE_ROOT: ${{ github.workspace }}/.integration/runner
-        run: |
-          FOUNDRY_CONTEXT_REPORT="$RUNNER_TEMP/foundry-source-context.json" \
-          FOUNDRY_BUILDER_MODEL_ASSETS="$RUNNER_TEMP/foundry-coding-model" \
-            uv run pytest -x -s -vv 'tests/test_postgres_artifact_worker.py::test_core_builder_runs_metered_model_and_final_scanned_zip[live_context]' 'tests/test_postgres_artifact_worker.py::test_core_builder_runs_metered_model_and_final_scanned_zip[live_polyglot]' 'tests/test_postgres_artifact_worker.py::test_core_builder_runs_metered_model_and_final_scanned_zip[live]' 'tests/test_postgres_artifact_worker.py::test_core_builder_runs_metered_model_and_final_scanned_zip[live_units]' 'tests/test_postgres_artifact_worker.py::test_core_builder_runs_metered_model_and_final_scanned_zip[live_auto]'
-      - name: Preserve actual source-context acceptance
-        if: github.event_name != 'push' && always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: agent01-source-context
-          path: ${{ runner.temp }}/foundry-source-context.json
-          if-no-files-found: warn
-          retention-days: 14
       - name: Provision the frozen 30B coding candidate inside existing CI capacity
         if: github.event_name != 'push'
         timeout-minutes: 10
@@ -115,6 +91,41 @@ jobs:
           assert shutil.disk_usage(directory).free >= required_disk, "existing CI disk cannot hold the approved coding candidate"
           PYCODE
           uv run foundry-model-host fetch-assets "$RUNNER_TEMP/foundry-coder30b-model" --profile "$RUNNER_TEMP/foundry-coder30b-profile.json"
+      - name: Actual 30B source-context understanding within the original limits
+        if: github.event_name != 'push'
+        env:
+          FOUNDRY_PLATFORM_PG_TEST: '1'
+          FOUNDRY_BUILDER_REAL_DOCKER: '1'
+          FOUNDRY_PLATFORM_TEST_DATABASE_URL: postgres://platform_ci:platform_ci_test_only@127.0.0.1:5432/platform_authority_test
+          FOUNDRY_RUNNER_SOURCE_ROOT: ${{ github.workspace }}/.integration/runner
+        run: |
+          FOUNDRY_CONTEXT_MODEL_PROFILE="$RUNNER_TEMP/foundry-coder30b-profile.json" \
+          FOUNDRY_CONTEXT_REPORT="$RUNNER_TEMP/foundry-source-context.json" \
+          FOUNDRY_BUILDER_MODEL_ASSETS="$RUNNER_TEMP/foundry-coder30b-model" \
+            uv run pytest -x -s -vv 'tests/test_postgres_artifact_worker.py::test_core_builder_runs_metered_model_and_final_scanned_zip[live_context]'
+      - name: Preserve actual source-context acceptance
+        if: github.event_name != 'push' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent01-source-context
+          path: ${{ runner.temp }}/foundry-source-context.json
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Fetch checksum-pinned coding model and CPU runtime
+        if: github.event_name != 'push'
+        timeout-minutes: 7
+        run: |
+          uv run foundry-model-host fetch-assets "$RUNNER_TEMP/foundry-coding-model"
+      - name: Managed model host through signed worker, PostgreSQL and Docker
+        if: github.event_name != 'push'
+        env:
+          FOUNDRY_PLATFORM_PG_TEST: '1'
+          FOUNDRY_BUILDER_REAL_DOCKER: '1'
+          FOUNDRY_PLATFORM_TEST_DATABASE_URL: postgres://platform_ci:platform_ci_test_only@127.0.0.1:5432/platform_authority_test
+          FOUNDRY_RUNNER_SOURCE_ROOT: ${{ github.workspace }}/.integration/runner
+        run: |
+          FOUNDRY_BUILDER_MODEL_ASSETS="$RUNNER_TEMP/foundry-coding-model" \
+            uv run pytest -x -s -vv 'tests/test_postgres_artifact_worker.py::test_core_builder_runs_metered_model_and_final_scanned_zip[live_polyglot]' 'tests/test_postgres_artifact_worker.py::test_core_builder_runs_metered_model_and_final_scanned_zip[live]' 'tests/test_postgres_artifact_worker.py::test_core_builder_runs_metered_model_and_final_scanned_zip[live_units]' 'tests/test_postgres_artifact_worker.py::test_core_builder_runs_metered_model_and_final_scanned_zip[live_auto]'
       - name: Fixed public tasks and bounded repairs of recorded model errors
         if: github.event_name != 'push'
         env:
