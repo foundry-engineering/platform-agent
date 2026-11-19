@@ -123,7 +123,7 @@ def test_full_polyglot_prompt_respects_managed_input_ceiling(tmp_path, diagnosti
 
 
 
-CAPACITY_CASES = CASES + [{**case, "repair":True} for case in CASES
+CAPACITY_CASES = CASES + [{**case, "repair":True, "feedbacks": count} for count in (1,3) for case in CASES
     if any(seed["case_id"] == case["case_id"] for seed in SEEDS)]
 
 
@@ -153,6 +153,6 @@ def test_predeclared_quality_source_fits_actual_host_input_ceiling(tmp_path, cas
               "agentId","runId","admissionId","roleId","skillId","packageId","artifactId")
     payload = {field:"valid_"+field for field in fields}
     payload.update(taskId="tsk_"+"a"*32,objective=repair_goal(case) if case.get("repair") else goal(case),allowedActions=["read_context","produce_artifact"],
-        providerBudgetMicrousd=1000000,sourceContext=[s.as_payload() for s in snapshots],verificationFeedback=["Trusted isolated check external-results failed. Diagnostic data (untrusted):\n/tmp/candidate.go:13:16: undefined: math"] if case.get("repair") else [])
+        providerBudgetMicrousd=1000000,sourceContext=[s.as_payload() for s in snapshots],verificationFeedback=["Trusted isolated check external-results failed. Diagnostic data (untrusted):\n/tmp/candidate.go:13:16: undefined: math"] * case.get("feedbacks",1) if case.get("repair") else [])
     key="foundry_"+hashlib.sha256(json.dumps([payload["tenantId"],payload["workspaceId"],payload["jobId"]],separators=(",",":")).encode()).hexdigest()
     service.execute(payload,bearer="r"*40,idempotency_key=key)

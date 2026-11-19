@@ -1,6 +1,7 @@
 """Repair actual recorded model errors with original immutable requirements."""
 from __future__ import annotations
 
+import ast
 import hashlib
 import io
 import json
@@ -34,8 +35,17 @@ def seed_for(case):
 
 
 def goal(case):
-    return (f"Repair ONLY {case['source_path']}; keep signature/package and required imports. "
-        "Minimal complete code, no comments. Follow the immutable original contract:\n" + case["source_template"].rstrip())
+    template = case["source_template"]
+    if case["language"] == "py":
+        function = next(node for node in ast.parse(template).body if isinstance(node, ast.FunctionDef))
+        documentation = ast.get_docstring(function) or ""
+        signature = next(line.strip() for line in template.splitlines() if line.startswith("def "))
+    else:
+        documentation = "\n".join(line.strip()[2:].strip() for line in template.splitlines() if line.strip().startswith("//"))
+        signature = next(line.strip().rstrip("{").strip() for line in template.splitlines()
+            if line.strip().startswith(("func ", "function ")))
+    return (f"Fix {case['source_path']}; preserve signature/imports. No comments. Original contract:\n"
+        + signature + "\n" + documentation).rstrip()
 
 
 def configure_repair(case, workspace, evidence, private, python_image):
