@@ -610,7 +610,9 @@ class OrderTotals(unittest.TestCase):
         except Exception:
             if larger_context:
                 from source_context_acceptance import failure_diagnostics
-                print("SOURCE_CONTEXT_FAILURE=" + json.dumps(failure_diagnostics(code.workspace, evidence), sort_keys=True))
+                diagnostics = failure_diagnostics(code.workspace, evidence)
+                diagnostics["modelFeedback"] = [context["verificationFeedback"] for context in model_contexts]
+                print("SOURCE_CONTEXT_FAILURE=" + json.dumps(diagnostics, sort_keys=True))
             raise
         assert len([x for x in peers.events if x.get('type') == 'artifact']) == 1
         assert peers.events[-1]['outcome'] == 'completed'

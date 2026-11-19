@@ -15,7 +15,9 @@ from engineering_agent.model_profiles import ModelProfile, load_model_profile
 OBJECTIVE = (
     "Implement repair_summary(outcomes: list[str]) -> dict[str, int] in src/app.py. "
     "Derive passed, failed and blocked counts from repair_report in the read-only "
-    "src/reference.py; return exactly those three keys. Reject unknown outcomes with ValueError. "
+    "src/reference.py; return exactly those three keys. "
+    "Preserve each count formula exactly as implemented in the reference; "
+    "do not infer its meaning from the field name. Reject unknown outcomes with ValueError. "
     "The allowed outcomes are the RepairReceipt outcome values in that reference. "
     "Use no imports, comments or docstrings. Output only src/app.py."
 )
@@ -33,7 +35,7 @@ def failure_diagnostics(workspace: Path, evidence: Path) -> dict[str, Any]:
     checks = []
     for path in sorted(evidence.glob("*.json"))[:16]:
         row = json.loads(path.read_bytes())
-        checks.append({key: row.get(key) for key in ("round", "check_id", "passed", "exit_code")})
+        checks.append({key: row.get(key) for key in ("round", "check_id", "passed", "exit_code", "diagnostic_tail")})
     return {"sourceSha256": hashlib.sha256(source).hexdigest(),
         "publicFixtureSource": source[:4096].decode("utf-8", errors="replace"),
         "checks": sorted(checks, key=lambda row: (row["round"], row["check_id"]))}
