@@ -74,3 +74,32 @@ output ceiling at 512 and records that effective profile digest, derives its
 input reservation from the selected profile and rejects mixed identities. An
 approved sufficiently sized persistent host and complete deployment acceptance
 remain necessary for production operation. No paid hosting is provisioned here.
+
+
+## Bounded repair of actual recorded failures
+
+The four failed cases from the qualified baseline run 44480681955 are preserved
+with their exact actual generated source hashes in
+`tests/quality/generated-7b-failures-v1.json`. The separate repair evaluation
+starts with those recorded errors, not a fabricated successful response or a
+golden solution. Every case retains its original public function contract in
+the immutable Core objective throughout repair; a model replacement cannot
+erase the requirements by removing source comments.
+
+The actual Builder first diagnoses the failure with the independent host oracle,
+then may make at most three new admitted model calls inside its existing total
+budget. Compiler errors are bounded untrusted feedback. Private expected vectors
+remain outside the model context and candidate mount. Each subsequent source
+snapshot must match the exact preceding DOP bytes, every inference must have
+one durable PostgreSQL claim and settlement, and the final private ZIP must
+pass all functional/delivery checks. Unknown spend or infrastructure failure
+aborts rather than silently retrying.
+
+The JSON report retains the nine-case first-attempt score unchanged and adds a
+separate `repairEvaluation`, with each actual round outcome, all model spend,
+initial/final source hashes and baseline/final verification evidence. Failed,
+missing, duplicate, unmetered, mixed-model or excess-call repairs cannot imply
+a passing repair gate. A passing earlier round cannot be followed by another
+paid attempt. These are focused regressions of known errors, not an unbiased
+benchmark or an overall product release. Original source-generation calls remain
+visible in the historical baseline report; repair costs count every new call.

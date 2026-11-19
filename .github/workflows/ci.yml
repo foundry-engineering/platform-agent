@@ -87,7 +87,7 @@ jobs:
         run: |
           FOUNDRY_BUILDER_MODEL_ASSETS="$RUNNER_TEMP/foundry-coding-model" \
             uv run pytest -s -vv 'tests/test_postgres_artifact_worker.py::test_core_builder_runs_metered_model_and_final_scanned_zip[live_polyglot]' 'tests/test_postgres_artifact_worker.py::test_core_builder_runs_metered_model_and_final_scanned_zip[live]' 'tests/test_postgres_artifact_worker.py::test_core_builder_runs_metered_model_and_final_scanned_zip[live_units]' 'tests/test_postgres_artifact_worker.py::test_core_builder_runs_metered_model_and_final_scanned_zip[live_auto]'
-      - name: Fixed public Python, JavaScript and Go first-attempt quality evaluation
+      - name: Fixed public tasks and bounded repairs of recorded model errors
         if: github.event_name != 'push'
         env:
           FOUNDRY_PLATFORM_PG_TEST: '1'

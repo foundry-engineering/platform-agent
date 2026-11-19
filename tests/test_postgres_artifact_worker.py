@@ -31,6 +31,7 @@ from platform_agent.postgres_artifact_budget import ArtifactBudgetRegistrationEr
 from test_core_execution_authorizer import Harness
 from worker_counterparties import Counterparties
 from public_quality import CASE_IDS
+from public_repairs import REPAIR_IDS
 
 
 @pytest.fixture
@@ -233,14 +234,16 @@ def quality_coding_runtime(tmp_path_factory):
     profile_path = os.environ.get("FOUNDRY_QUALITY_MODEL_PROFILE")
     profile = replace(load_model_profile(Path(profile_path)) if profile_path else DEFAULT_PROFILE,
         max_output_tokens=512)
-    receipts = []
+    receipts, repair_receipts = [], []
     directory = tmp_path_factory.mktemp("public-quality")
     with live_model(directory / "llama", Path(os.environ["FOUNDRY_BUILDER_MODEL_ASSETS"]),
                     max_output_tokens=512, approved_profile=profile) as runtime:
         try:
-            yield runtime, receipts, profile
+            yield runtime, receipts, profile, repair_receipts
         finally:
             result = report(receipts)
+            from public_repairs import report as repair_report
+            result["repairEvaluation"] = repair_report(repair_receipts)
             print("PUBLIC_QUALITY_REPORT=" + json.dumps(result, sort_keys=True))
             if os.environ.get("FOUNDRY_QUALITY_REPORT"):
                 target = Path(os.environ["FOUNDRY_QUALITY_REPORT"])
@@ -249,7 +252,7 @@ def quality_coding_runtime(tmp_path_factory):
                     json.dump(result, file, sort_keys=True, indent=2)
 
 
-@pytest.mark.parametrize("sandbox", ["unit", "docker", "project", "live", "live_units", "live_auto", "live_polyglot", *CASE_IDS])
+@pytest.mark.parametrize("sandbox", ["unit", "docker", "project", "live", "live_units", "live_auto", "live_polyglot", *CASE_IDS, *REPAIR_IDS])
 def test_core_builder_runs_metered_model_and_final_scanned_zip(database, tmp_path, monkeypatch, sandbox, request):
     """Signed Builder with actual persistence and optional real model and Docker."""
     import io
@@ -265,11 +268,13 @@ def test_core_builder_runs_metered_model_and_final_scanned_zip(database, tmp_pat
     from platform_agent.grant_signing import ExecutionGrantSigner, sign_execution_grant
     from builder_runtime_fixture import Harness as CodeHarness, IMAGE
     quality = sandbox in CASE_IDS
-    if (quality or sandbox in {"live", "live_units", "live_auto", "live_polyglot"}) and not os.environ.get("FOUNDRY_BUILDER_MODEL_ASSETS"):
+    repair = sandbox in REPAIR_IDS
+    evaluating = quality or repair
+    if (evaluating or sandbox in {"live", "live_units", "live_auto", "live_polyglot"}) and not os.environ.get("FOUNDRY_BUILDER_MODEL_ASSETS"):
         pytest.skip("live model weights are explicitly configured in acceptance")
     if sandbox in {"docker", "project"} and os.environ.get("FOUNDRY_BUILDER_REAL_DOCKER") != "1":
         pytest.skip("actual Docker execution is mandatory in native integration")
-    live = quality or sandbox in {"live", "live_units", "live_auto", "live_polyglot"}
+    live = evaluating or sandbox in {"live", "live_units", "live_auto", "live_polyglot"}
     live_units = sandbox in {"live_units", "live_auto"}
     auto = sandbox == "live_auto"
     polyglot = sandbox == "live_polyglot"
@@ -277,12 +282,12 @@ def test_core_builder_runs_metered_model_and_final_scanned_zip(database, tmp_pat
     project = sandbox == "project"
     from work_unit_fixture import FILES, PARTS, PATHS, UNITS, assigned_unit, verifiers as project_verifiers
     h = Harness(tmp_path, monkeypatch)
-    quality_receipts, quality_profile, quality_runtime = None, None, None
-    if quality:
-        quality_runtime, quality_receipts, quality_profile = request.getfixturevalue("quality_coding_runtime")
+    quality_receipts, quality_profile, quality_runtime, repair_receipts = None, None, None, None
+    if evaluating:
+        quality_runtime, quality_receipts, quality_profile, repair_receipts = request.getfixturevalue("quality_coding_runtime")
     if live:
-        h.config = replace(h.config, max_input_tokens=4096, max_output_tokens=512 if live_units or polyglot or quality else 192)
-        if quality:
+        h.config = replace(h.config, max_input_tokens=4096, max_output_tokens=512 if live_units or polyglot or evaluating else 192)
+        if evaluating:
             h.config = replace(h.config, max_input_tokens=quality_profile.max_input_tokens)
     elif project:
         h.config = replace(h.config, max_input_tokens=4096, max_output_tokens=3072)
@@ -304,12 +309,16 @@ def test_core_builder_runs_metered_model_and_final_scanned_zip(database, tmp_pat
         if project else "Build a function returning 42"
     )
     quality_case = None
-    if quality:
+    if repair:
+        from public_repairs import selected, goal as repair_goal
+        quality_case = selected(sandbox)
+        objective = repair_goal(quality_case)
+    elif quality:
         from public_quality import CASES, goal
         quality_case = next(case for case in CASES if case["case_id"] == sandbox)
         objective = goal(quality_case)
-    h.job = replace(h.job, objective=objective, id=h.job.id + "-" + sandbox if quality else h.job.id)
-    if quality:
+    h.job = replace(h.job, objective=objective, id=h.job.id + "-" + sandbox if evaluating else h.job.id)
+    if evaluating:
         h.transport.document["executionJobId"] = h.job.id
     code_root = tmp_path / "builder"
     code_root.mkdir(mode=0o700)
@@ -320,7 +329,7 @@ def test_core_builder_runs_metered_model_and_final_scanned_zip(database, tmp_pat
     code.task = replace(code.task, tenant_id=h.config.tenant_id, project_id=h.config.project_id,
         cell_id=snapshot.context.cell_id,
         goal=h.job.objective, model_budget_microusd=h.job.provider_budget_microusd,
-        max_rounds=1 if quality else 4 if live_units else code.task.max_rounds)
+        max_rounds=3 if repair else 1 if quality else 4 if live_units else code.task.max_rounds)
     grant = {key: value for key, value in code.grant.items() if key != "signatures"}
     grant["tenant_context"] = snapshot.context.as_dict()
     grant["agent_id"] = h.config.canonical_agent_id
@@ -391,7 +400,7 @@ def test_core_builder_runs_metered_model_and_final_scanned_zip(database, tmp_pat
     if live:
         from live_coding_model import MODEL_ID
 
-        if quality:
+        if evaluating:
             provider_origin, secret = quality_runtime
         else:
             provider_origin, secret = request.getfixturevalue("live_coding_runtime")
@@ -524,9 +533,13 @@ class OrderTotals(unittest.TestCase):
         report_model_errors(monkeypatch)
         live_paths, matrix = configure_polyglot(code.workspace, IMAGE)
         verifier = DockerSandboxMatrixVerifier(workspace=code.workspace, evidence_dir=evidence, matrix=matrix)
-    if quality:
-        from public_quality import configure
-        verifier = configure(quality_case, code.workspace, evidence, code_root / "oracles", IMAGE)
+    if evaluating:
+        if repair:
+            from public_repairs import configure_repair
+            verifier = configure_repair(quality_case, code.workspace, evidence, code_root / "oracles", IMAGE)
+        else:
+            from public_quality import configure
+            verifier = configure(quality_case, code.workspace, evidence, code_root / "oracles", IMAGE)
         live_paths = (quality_case["source_path"],)
     if sandbox == 'unit':
         verifier = code.verifier
@@ -534,18 +547,25 @@ class OrderTotals(unittest.TestCase):
     if project:
         verifier, unit_verifiers = project_verifiers(code.workspace, evidence, docker=True)
     try:
-        if live and not quality:
+        if live and not evaluating:
             baseline = verifier.verify(code.task, round_number=1)
             assert not baseline.passed and baseline.evidence_refs
         worker = CoreBuilderWorker(control=control,
             configuration=CoreBuilderConfiguration(code.task, h.config, h.job.work_node_id,
-                PATHS if project else live_paths if live_units or polyglot or quality else ('src/app.py',), code.workspace, code.state,
-                work_units=UNITS if project else live_work_units, automatic_plan=automatic_plan, diagnose_first=polyglot),
+                PATHS if project else live_paths if live_units or polyglot or evaluating else ('src/app.py',), code.workspace, code.state,
+                work_units=UNITS if project else live_work_units, automatic_plan=automatic_plan, diagnose_first=polyglot or repair),
             authority_factory=lambda check: code.authority(execution_checkpoint=check), worker_factory=factory,
             verifier=verifier, artifacts=code.artifacts,
             tenant_context=lambda: h.admissions.current_context(h.config.tenant_id,h.config.project_id),
             skill_id=h.package['skill_id'], skill_contract_sha256=h.package['skill_contract_sha256'],
             clock=lambda: h.now, unit_verifiers=unit_verifiers)
+        if repair:
+            from public_repairs import observe as observe_repair
+            receipt = observe_repair(worker, case=quality_case, code=code, peers=peers, database=database,
+                model_contexts=model_contexts, inference=inference, evidence=evidence, model_profile=quality_profile)
+            repair_receipts.append(receipt)
+            print("PUBLIC_REPAIR_CASE=" + json.dumps(receipt.case_id) + ":" + receipt.outcome)
+            return
         if quality:
             from public_quality import observe
             receipt = observe(worker, case=quality_case, code=code, peers=peers, database=database,
