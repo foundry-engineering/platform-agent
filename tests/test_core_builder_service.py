@@ -12,7 +12,7 @@ from test_core_worker_service import write
 from builder_runtime_fixture import IMAGE, link_core_code_authority
 
 
-@pytest.mark.parametrize("version", ["v1", "v2", "v3"])
+@pytest.mark.parametrize("version", ["v1", "v2", "v3", "v2_readonly"])
 @pytest.mark.parametrize("matrix", [False, True])
 def test_real_private_profile_builds_actual_core_builder_without_model_or_signing(tmp_path, monkeypatch, version, matrix):
     h = Harness(tmp_path, monkeypatch)
@@ -59,12 +59,25 @@ def test_real_private_profile_builds_actual_core_builder_without_model_or_signin
         'sandbox': {'image': IMAGE, 'checks': [{'check_id': 'python-unittest',
             'argv': ['/usr/local/bin/python', '-B', '-m', 'unittest', 'discover', '-s', '/workspace/tests']}]},
     }
-    if version == "v2":
+    if version in {"v2", "v2_readonly"}:
         profile["schemaVersion"] = "foundry.core-builder-profile.v2"
         profile.pop("sourcePaths")
         profile["workUnits"] = [{"unitId": "unit_primary", "objective": code.task.goal,
             "sourcePaths": ["src/app.py"], "outputPaths": ["src/app.py"], "dependencies": [],
             "maxRounds": 3, "checkIds": ["python-unittest"]}]
+    if version == "v2_readonly":
+        from agent_protocol.execution_grant import derive_execution_grant_id
+        from platform_agent.grant_signing import ExecutionGrantSigner, sign_execution_grant
+        from dataclasses import replace
+        grant = {key: value for key, value in code.grant.items() if key != "signatures"}
+        grant["read_paths"] = ["src/app.py", "src/reference.py"]
+        grant["write_paths"] = ["src/app.py"]
+        grant["grant_id"] = derive_execution_grant_id(grant)
+        code.grant = sign_execution_grant(grant, signers=(ExecutionGrantSigner(
+            "kid_builder-grant.v1", code.grant_key.public_key().public_bytes_raw(), code.grant_key.sign),))
+        code.admission = replace(code.admission, signed_grants=(code.grant,))
+        write(tmp_path / "admission.json", json.dumps(code.admission.as_dict()).encode())
+        profile["workUnits"][0]["sourcePaths"].append("src/reference.py")
     if version == "v3":
         (code.workspace / "src").mkdir(exist_ok=True)
         (code.workspace / "src/app.py").write_text("def main(): return 0\n")

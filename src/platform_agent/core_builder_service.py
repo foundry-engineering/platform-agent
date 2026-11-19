@@ -139,7 +139,11 @@ def load_builder(profile_path: Path) -> CoreBuilderWorker:
     preflight = authority_factory(lambda: None)
     if preflight.agent_id != binding.canonical_agent_id:
         raise WorkerConfigurationError("Builder Execution Grant authorizes a different canonical agent")
-    preflight.require_source_paths(source_paths)
+    output_paths = (
+        tuple(sorted({path for unit in work_units for path in unit.output_paths}))
+        if work_units else source_paths
+    )
+    preflight.require_source_paths(source_paths, output_paths=output_paths)
     if specification is not None:
         automatic_plan = compile_automatic_plan(specification=specification,
             authority=preflight, workspace=Path(data["workspace"]))

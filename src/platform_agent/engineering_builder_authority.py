@@ -120,13 +120,23 @@ class TenantBuilderAuthority:
             raise BuilderBoundaryError("trusted Builder clock must be timezone-aware")
         return value.astimezone(UTC)
 
-    def require_source_paths(self, paths: tuple[str, ...]) -> None:
+    def require_source_paths(
+        self, paths: tuple[str, ...], *, output_paths: tuple[str, ...] | None = None,
+    ) -> None:
         self.checkpoint()
-        for key in ("read_paths", "write_paths"):
+        outputs = paths if output_paths is None else output_paths
+        for values in (paths, outputs):
+            if (not isinstance(values, tuple) or not values
+                    or any(not isinstance(value, str) for value in values)
+                    or len(set(values)) != len(values)):
+                raise BuilderBoundaryError("explicit unique Builder source and output paths required")
+        if not set(outputs) <= set(paths):
+            raise BuilderBoundaryError("Builder outputs must have explicit readable source snapshots")
+        for key, requested in (("read_paths", paths), ("write_paths", outputs)):
             roots = self._grant.get(key)
             if not isinstance(roots, list) or not all(isinstance(root, str) for root in roots):
                 raise BuilderBoundaryError("signed Builder file scope unavailable")
-            for value in paths:
+            for value in requested:
                 path = PurePosixPath(source_path(value))
                 if not any(PurePosixPath(root) == PurePosixPath(".") or path == PurePosixPath(root)
                            or path.is_relative_to(PurePosixPath(root)) for root in roots):
