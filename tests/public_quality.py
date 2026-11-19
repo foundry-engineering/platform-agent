@@ -78,7 +78,7 @@ def configure(case, workspace, evidence, private, python_image):
         "expectedResults": [call["expected"] for call in case["calls"]], "nilEqualsEmpty": case["language"] == "go"}))
     profile = {"image": {"py": python_image, "js": NODE, "go": GO}[case["language"]],
         "checks": [{"check_id": "external-results", "argv": argv, "oracleFile": str(oracle)}],
-        "timeout_seconds": 60, "memory_mb": 1024, "pids_limit": 128,
+        "timeout_seconds": 60, "memory_mb": 1024, "pids_limit": 128, "diagnostic_bytes": 1024,
         "compiled_execution": case["language"] == "go"}
     verifier, units, diagnose = verification_ports(value=profile, workspace=workspace, evidence_dir=evidence, work_units=())
     assert units is None and not diagnose
@@ -96,6 +96,9 @@ def observe(worker, *, case, code, peers, database, model_contexts, inference, e
     verified = result.execution.status == "verified"
     step = result.execution.steps[0]
     assert step.verification.passed is verified
+    if not verified:
+        print("PUBLIC_QUALITY_FAILURE=" + json.dumps({"caseId": case["case_id"],
+            "feedback": step.verification.feedback, "source": (code.workspace / case["source_path"]).read_text()[:8192]}, sort_keys=True))
     assert len(model_contexts) == 1 and not model_contexts[0]["verificationFeedback"]
     context = model_contexts[0]["sourceContext"]
     assert len(context) == 1 and context[0]["path"] == case["source_path"]
