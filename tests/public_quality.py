@@ -46,15 +46,26 @@ def _runner(case):
             "process.stdout.write(JSON.stringify(inputs.map(args=>fn(...args))));\n"
         ), ["/usr/local/bin/node", "/workspace/tests/runner.cjs"]
     signatures = {"has_close_elements": ("[]float64", "float64"), "make_palindrome": ("string",), "get_positive": ("[]int",)}
-    declarations = "".join(f"var a{i} {kind}; if err:=json.Unmarshal(args[{i}],&a{i});err!=nil{{panic(err)}};"
-                           for i, kind in enumerate(signatures[entry]))
-    args = ",".join(f"a{i}" for i in range(len(signatures[entry])))
+    def literal(value, kind):
+        if kind.startswith("[]"):
+            return kind + "{" + ",".join(json.dumps(item, allow_nan=False) for item in value) + "}"
+        return json.dumps(value, ensure_ascii=False, allow_nan=False)
+    calls = [entry + "(" + ",".join(literal(value, kind) for value, kind in
+        zip(call["arguments"], signatures[entry], strict=True)) + ")" for call in case["calls"]]
+    # Public input literals avoid a cold encoding/json dependency exhausting the
+    # unchanged 64 MiB compiler tmpfs. No expected value enters this source.
+    result_type = {"has_close_elements": "bool", "make_palindrome": "string", "get_positive": "[]int"}[entry]
+    emit = "print(value)"
+    helper = ""
+    if result_type == "string":
+        helper = r'''func emitString(s string){print("\"");for _,r:=range s{switch r{case '"':print("\\\"");case '\\':print("\\\\");default:if r<32{const hex="0123456789abcdef";print("\\u00",string(hex[r>>4]),string(hex[r&15]))}else{print(string(r))}}};print("\"")}
+'''
+        emit = "emitString(value)"
+    elif result_type == "[]int":
+        emit = 'print("[");for j,n:=range value{if j>0{print(",")};print(n)};print("]")'
     return "runner.go", (
-        'package main\nimport("encoding/json";"os")\nfunc main(){'
-        'var inputs [][]json.RawMessage; f,e:=os.Open("/workspace/tests/inputs.json");if e!=nil{panic(e)};'
-        'if e=json.NewDecoder(f).Decode(&inputs);e!=nil{panic(e)}; out:=[]any{};'
-        'for _,args:=range inputs{' + declarations + f'out=append(out,{entry}({args}))' + '};'
-        'if e=json.NewEncoder(os.Stdout).Encode(out);e!=nil{panic(e)}}\n'
+        "package main\n" + helper + "func main(){values:=[]" + result_type + "{" + ",".join(calls) +
+        '};print("[");for i,value:=range values{if i>0{print(",")};' + emit + '};print("]")}\n'
     ), ["/usr/bin/env", "GOCACHE=/tmp/go-cache", "GOPATH=/tmp/go", "GOPROXY=off", "GOSUMDB=off",
         "GOTOOLCHAIN=local", "GOMAXPROCS=1", "/bin/sh", "-eu", "-c",
         "cp /workspace/src/candidate.go /workspace/tests/runner.go /tmp/; /usr/local/go/bin/go run -p=1 /tmp/candidate.go /tmp/runner.go"]

@@ -27,6 +27,12 @@ installation or production scanner. Every successful case must also create a
 private source ZIP, agree with its manifest checksums and complete its Core
 projection. Failed candidates must not publish a successful result.
 
+Each language runner must first accept an explicit controlled reference and
+reject the stub in actual Docker before CI dispatches any model request. These
+controlled checks qualify measurement machinery and never count as model results.
+Go uses typed public input literals and a small JSON emitter, preserving the
+unchanged 64 MiB temporary limit without compiling encoding/json.
+
 Only input argument vectors and fixed runner programs enter the network-denied,
 read-only candidate container. Expected results remain in a private host file
 outside that workspace. The host compares captured JSON values with these
