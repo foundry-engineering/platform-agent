@@ -7,18 +7,17 @@ import json
 import sys
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from dataclasses import replace
 from typing import Any
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from engineering_agent.builder import BuilderTask
-from engineering_agent.sandbox_verifier import DockerSandboxVerifier, TrustedCheck, TrustedSandboxProfile
 from foundry_runner.control_plane_http import ControlPlaneHttpClient
 from foundry_runner.execution_provider import ExecutionWorker
 
 from .admitted_scheduler import AdmittedSchedule
 from .artifact_store import ContentAddressedArtifactStore
 from .builder_work_units import BuilderWorkUnit, validate_work_units
+from .builder_verification import verification_ports
 from .builder_auto_plan import AutoPlanSpecification, compile_automatic_plan
 from .control_plane import DispatchPlan, TaskAssignment
 from .core_builder_runtime import CoreBuilderConfiguration, CoreBuilderWorker
@@ -147,23 +146,12 @@ def load_builder(profile_path: Path) -> CoreBuilderWorker:
         work_units = automatic_plan.units
     if work_units:
         validate_work_units(task, source_paths, work_units, preflight.policy_ref)
-    sandbox = dict(data["sandbox"])
-    sandbox["checks"] = tuple(TrustedCheck(item["check_id"], tuple(item["argv"])) for item in sandbox["checks"])
-    sandbox_profile = TrustedSandboxProfile(**sandbox)
-    verifier = DockerSandboxVerifier(workspace=Path(data["workspace"]),
-        evidence_dir=Path(data["verificationEvidenceDirectory"]), profile=sandbox_profile)
-    unit_verifiers = None
-    if work_units:
-        checks = {check.check_id: check for check in sandbox_profile.checks}
-        if any(check_id not in checks for unit in work_units for check_id in unit.check_ids):
-            raise WorkerConfigurationError("work-unit checks must exist in the trusted sandbox profile")
-        unit_verifiers = {unit.unit_id: DockerSandboxVerifier(workspace=Path(data["workspace"]),
-            evidence_dir=Path(data["verificationEvidenceDirectory"]),
-            profile=replace(sandbox_profile, checks=tuple(checks[key] for key in unit.check_ids)))
-            for unit in work_units}
+    verifier, unit_verifiers, diagnose_first = verification_ports(value=data["sandbox"],
+        workspace=Path(data["workspace"]), evidence_dir=Path(data["verificationEvidenceDirectory"]),
+        work_units=work_units)
     artifacts = ContentAddressedArtifactStore(Path(data["artifactStoreRoot"]), tenants)
     config = CoreBuilderConfiguration(task, binding, data["coreWorkNodeId"], source_paths,
-        Path(data["workspace"]), Path(data["stateDirectory"]), data["maximumSeconds"], work_units, automatic_plan)
+        Path(data["workspace"]), Path(data["stateDirectory"]), data["maximumSeconds"], work_units, automatic_plan, diagnose_first)
     def worker_factory(context: Mapping[str, Any], tag: str, ceiling: int | None,
                        envelope: Mapping[str, Any]) -> ExecutionWorker:
         current = _document(str(runtime_path), 64 * 1024)

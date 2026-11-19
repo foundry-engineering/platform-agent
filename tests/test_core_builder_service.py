@@ -13,7 +13,8 @@ from builder_runtime_fixture import IMAGE, link_core_code_authority
 
 
 @pytest.mark.parametrize("version", ["v1", "v2", "v3"])
-def test_real_private_profile_builds_actual_core_builder_without_model_or_signing(tmp_path, monkeypatch, version):
+@pytest.mark.parametrize("matrix", [False, True])
+def test_real_private_profile_builds_actual_core_builder_without_model_or_signing(tmp_path, monkeypatch, version, matrix):
     h = Harness(tmp_path, monkeypatch)
     root = tmp_path / 'code'
     root.mkdir(mode=0o700)
@@ -72,9 +73,15 @@ def test_real_private_profile_builds_actual_core_builder_without_model_or_signin
         profile["autoPlan"] = {"schemaVersion": "foundry.builder-auto-plan.v1",
             "sourcePaths": ["src/app.py"], "fileChecks": {"src/app.py": ["python-unittest"]},
             "maxFilesPerUnit": 1, "maxRoundsPerUnit": 3, "moduleAliases": {}}
+    if matrix:
+        profile["sandbox"]["diagnostic_bytes"] = 1200
+        profile["sandbox"] = {"schemaVersion": "foundry.builder-sandbox-matrix.v1",
+            "profiles": [profile["sandbox"]], "diagnoseFirst": True}
     path = tmp_path / 'builder.json'
     write(path, json.dumps(profile).encode())
-    assert isinstance(load_builder(path), CoreBuilderWorker)
+    worker = load_builder(path)
+    assert isinstance(worker, CoreBuilderWorker)
+    assert worker._config.diagnose_first is matrix
     assert h.calls == [] and h.transport.requests == []
     assert _admission(code.admission.as_dict()) == code.admission
 

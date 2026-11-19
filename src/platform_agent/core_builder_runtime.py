@@ -202,6 +202,7 @@ class CoreBuilderConfiguration:
     maximum_seconds: int = 600
     work_units: tuple[BuilderWorkUnit, ...] = ()
     automatic_plan: AutomaticWorkPlan | None = None
+    diagnose_first: bool = False
 
 
 class CoreBuilderWorker:
@@ -246,7 +247,7 @@ class CoreBuilderWorker:
                 source_paths=config.source_paths, runner=model, verifier=self._verifier,
                 artifacts=self._artifacts, state_directory=config.state_directory,
                 work_units=config.work_units, unit_verifiers=self._unit_verifiers,
-                automatic_plan=config.automatic_plan).run()
+                automatic_plan=config.automatic_plan, diagnose_first=config.diagnose_first).run()
             model.publish(completed, self._artifacts, authority.context)
             return True
         except Exception:

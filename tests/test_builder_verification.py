@@ -1,0 +1,75 @@
+"""Operational compiler selection is trusted data and cannot manufacture authority."""
+
+from __future__ import annotations
+
+import io
+import json
+import zipfile
+
+import pytest
+from engineering_agent.builder import BuilderBoundaryError
+
+from builder_runtime_fixture import Harness, IMAGE
+from platform_agent.builder_verification import verification_ports
+from platform_agent.core_worker_service import WorkerConfigurationError
+
+
+def profile(check="python-check"):
+    return {
+        "image": IMAGE,
+        "checks": [{"check_id": check, "argv": ["/usr/local/bin/python", "-V"]}],
+        "diagnostic_bytes": 1200,
+    }
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"schemaVersion": "model-selected"},
+        {"diagnoseFirst": "true"},
+        {"profiles": []},
+        {"profiles": [profile(), profile()]},
+        {"profiles": [{**profile(), "image": "python:latest"}]},
+        {"profiles": [{**profile(), "diagnostic_bytes": 99999}]},
+        {"profiles": [{**profile(), "compiled_execution": "true"}]},
+        {"profiles": [{**profile(), "checks": [{"check_id": "python-check", "argv": ["python"]}]}]},
+        {"extra": "model command"},
+    ],
+)
+def test_untrusted_matrix_shapes_never_construct_worker_or_run_commands(tmp_path, change):
+    h = Harness(tmp_path)
+    evidence = tmp_path / "evidence"
+    evidence.mkdir(mode=0o700)
+    matrix = {
+        "schemaVersion": "foundry.builder-sandbox-matrix.v1",
+        "profiles": [profile()],
+        "diagnoseFirst": True,
+    }
+    with pytest.raises((ValueError, BuilderBoundaryError, WorkerConfigurationError)):
+        verification_ports(
+            value={**matrix, **change}, workspace=h.workspace, evidence_dir=evidence, work_units=()
+        )
+    assert not h.runner.requests and not list(evidence.glob("*.json"))
+
+
+def test_signed_runtime_retains_initial_diagnosis_in_sealed_private_manifest(tmp_path):
+    h = Harness(tmp_path)
+    source = h.workspace / "src/app.py"
+    source.parent.mkdir()
+    source.write_text("def main():\n    return 0\n")
+    result = h.runtime(diagnose_first=True).run()
+    assert result.execution.status == "verified"
+    assert (
+        result.execution.initial_verification and not result.execution.initial_verification.passed
+    )
+    assert h.verifier.calls == [5, 1, 2, 3]
+    assert h.runner.requests[0].verification_feedback
+    data = h.artifacts.read_bytes(
+        h.authority().context, repository_id=h.repo, artifact_id=result.artifact.artifact_id
+    )
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        manifest = json.loads(archive.read("builder-result.json"))
+    assert manifest["initial_verification"]["passed"] is False
+    assert manifest["initial_verification"]["evidence_refs"]
+    assert manifest["delivery_verification"]["passed"] is True
+    assert len(manifest["steps"]) == 2

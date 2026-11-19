@@ -12,7 +12,7 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     services:
       postgres:
         image: postgres:16-alpine
@@ -57,6 +57,10 @@ jobs:
           persist-credentials: false
       - name: Pull reviewed image for signed Builder repair acceptance
         run: docker pull docker.io/library/python@sha256:1b668429b3511ab407d8e00648891631b0b1a4d7e15e3ca70f38ab5b91ad4ab4
+      - name: Pull immutable JavaScript and Go compilers for actual model work
+        run: |
+          docker pull docker.io/library/node@sha256:9d266751ca3d7fdbe651c878ffd5ad0a42fed49a18c283509267c97f025b7496
+          docker pull docker.io/library/golang@sha256:4fa7c968ba93f1635670522dbb01a2c78150443e1385746924566079f36570ea
       - name: Concrete worker and signed Builder private-delivery acceptance
         env:
           FOUNDRY_BUILDER_REAL_DOCKER: '1'
@@ -82,7 +86,7 @@ jobs:
           FOUNDRY_RUNNER_SOURCE_ROOT: ${{ github.workspace }}/.integration/runner
         run: |
           FOUNDRY_BUILDER_MODEL_ASSETS="$RUNNER_TEMP/foundry-coding-model" \
-            uv run pytest -s -vv 'tests/test_postgres_artifact_worker.py::test_core_builder_runs_metered_model_and_final_scanned_zip[live]' 'tests/test_postgres_artifact_worker.py::test_core_builder_runs_metered_model_and_final_scanned_zip[live_units]' 'tests/test_postgres_artifact_worker.py::test_core_builder_runs_metered_model_and_final_scanned_zip[live_auto]'
+            uv run pytest -s -vv 'tests/test_postgres_artifact_worker.py::test_core_builder_runs_metered_model_and_final_scanned_zip[live]' 'tests/test_postgres_artifact_worker.py::test_core_builder_runs_metered_model_and_final_scanned_zip[live_units]' 'tests/test_postgres_artifact_worker.py::test_core_builder_runs_metered_model_and_final_scanned_zip[live_auto]' 'tests/test_postgres_artifact_worker.py::test_core_builder_runs_metered_model_and_final_scanned_zip[live_polyglot]'
       - name: Checkout coordinated registry
         uses: actions/checkout@v4
         with:
