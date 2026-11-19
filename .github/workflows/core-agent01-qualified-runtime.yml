@@ -1,0 +1,139 @@
+name: core-agent01-qualified-runtime
+'on':
+  pull_request:
+    branches: [main]
+    paths: [.github/workflows/core-agent01-qualified-runtime.yml, tools/capture_core_agent01_receipt.py]
+  push:
+    branches: [main]
+    paths: [.github/workflows/core-agent01-qualified-runtime.yml, tools/capture_core_agent01_receipt.py]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: core-agent01-qualified-runtime-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+jobs:
+  qualified-browser-delivery-recovery:
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'work/core-agent01-qualified-runtime-20261119')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env: {POSTGRES_USER: foundry_ci, POSTGRES_PASSWORD: isolated_ci_only, POSTGRES_DB: foundry_agent01_test}
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U foundry_ci -d foundry_agent01_test"
+          --health-interval 5s --health-timeout 3s --health-retries 15
+      postgres_restore:
+        image: postgres:16-alpine
+        env: {POSTGRES_USER: foundry_restore, POSTGRES_PASSWORD: isolated_restore_only, POSTGRES_DB: foundry_recovery_test}
+        ports: ['15432:5432']
+        options: >-
+          --health-cmd "pg_isready -U foundry_restore -d foundry_recovery_test"
+          --health-interval 5s --health-timeout 3s --health-retries 15
+    env:
+      FOUNDRY_AGENT01_RESTORE_URL: postgres://foundry_restore:isolated_restore_only@127.0.0.1:15432/foundry_recovery_test
+      DATABASE_URL: postgres://foundry_ci:isolated_ci_only@127.0.0.1:5432/foundry_agent01_test
+      FOUNDRY_SCOPE_DB_TEST: '1'
+      FOUNDRY_PLATFORM_PG_TEST: '1'
+      FOUNDRY_PLATFORM_TEST_DATABASE_URL: postgres://foundry_ci:isolated_ci_only@127.0.0.1:5432/foundry_agent01_test
+      FOUNDRY_STORAGE_ACCEPTANCE_REAL_CLAMAV: '1'
+      FOUNDRY_CLAMAV_DB: /var/lib/clamav
+      FOUNDRY_TEST_STORAGE_HOST: ivqeo-storage.test
+      FOUNDRY_BUILDER_REAL_DOCKER: '1'
+      FOUNDRY_AGENT01_TEST_PLATFORM: ${{ github.workspace }}/.integration/platform
+      FOUNDRY_RUNNER_SOURCE_ROOT: ${{ github.workspace }}/.integration/runner
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/checkout@v4
+        with:
+          repository: foundry-engineering/platform-agent
+          ref: 7f0d59d731be8e99a112a7951fb62d4ea63e05c4
+          path: .integration/platform
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: foundry-engineering/foundry-core
+          ref: b59de193c4076ea52c2030a5eaf2ec48d2f14627
+          token: ${{ secrets.FOUNDRY_CI_READ_TOKEN }}
+          path: .integration/core
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: foundry-engineering/foundry-runners
+          ref: 66f3bad6600b91d3e72653069b77d0ae79e67119
+          token: ${{ secrets.FOUNDRY_CI_READ_TOKEN }}
+          path: .integration/runner
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - uses: astral-sh/setup-uv@v7
+      - uses: actions/setup-node@v4
+        with: {node-version: '24'}
+      - name: Install frozen runtimes without publishing private build logs
+        env:
+          GIT_TOKEN: ${{ secrets.FOUNDRY_CI_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$GIT_TOKEN"
+          echo "::add-mask::$GIT_TOKEN"
+          install -d -m 0700 "$RUNNER_TEMP/core-private-logs"
+          exec > "$RUNNER_TEMP/core-private-logs/install.log" 2>&1
+          git config --global url."https://x-access-token:${GIT_TOKEN}@github.com/".insteadOf "https://github.com/"
+          trap 'git config --global --unset-all url."https://x-access-token:${GIT_TOKEN}@github.com/".insteadOf' EXIT
+          uv sync --project .integration/platform --extra dev --extra worker --extra integration --locked
+          uv sync --project .integration/core --locked --extra storage
+          uv run --project .integration/platform --no-sync ruff check tools/capture_core_agent01_receipt.py
+          uv run --project .integration/platform --no-sync mypy tools/capture_core_agent01_receipt.py
+      - name: Provision the same frozen coding weights within available memory
+        env:
+          FOUNDRY_AGENT01_MODEL_PROFILE: ${{ runner.temp }}/agent01-model-profile.json
+        run: |
+          set -euo pipefail
+          install -m 0600 .integration/platform/deploy/profiles/qwen3-coder-30b-a3b-q2-xl.json "$FOUNDRY_AGENT01_MODEL_PROFILE"
+          uv run --project .integration/platform --no-sync python - <<'PY'
+          import json, os, shutil
+          from pathlib import Path
+          from engineering_agent.model_profiles import load_model_profile, profile_readiness
+          from engineering_agent.model_host import RUNTIME
+          directory = Path(os.environ['RUNNER_TEMP'])
+          profile = load_model_profile(Path(os.environ['FOUNDRY_AGENT01_MODEL_PROFILE']))
+          ready = profile_readiness(profile, directory / 'agent01-model', RUNTIME)
+          print(json.dumps(ready, sort_keys=True))
+          assert ready['memory_sufficient'] and ready['platform_supported']
+          assert shutil.disk_usage(directory).free >= sum(asset.size for asset in profile.weights) + RUNTIME.size + 1024**3
+          PY
+          uv run --project .integration/platform --no-sync foundry-model-host fetch-assets "$RUNNER_TEMP/agent01-model" --profile "$FOUNDRY_AGENT01_MODEL_PROFILE"
+          docker pull docker.io/library/python@sha256:1b668429b3511ab407d8e00648891631b0b1a4d7e15e3ca70f38ab5b91ad4ab4
+          sudo apt-get update > "$RUNNER_TEMP/core-private-logs/apt.log" 2>&1
+          sudo apt-get install -y --no-install-recommends clamav postgresql-client-16 >> "$RUNNER_TEMP/core-private-logs/apt.log" 2>&1
+          sudo systemctl stop clamav-freshclam.service
+          sudo freshclam --stdout > "$RUNNER_TEMP/core-private-logs/freshclam.log" 2>&1
+          printf '127.0.0.1 ivqeo-storage.test\n' | sudo tee -a /etc/hosts
+      - name: Actual private Core browser to model, scanned delivery and cold recovery
+        working-directory: .integration/core/platform-ui
+        env:
+          FOUNDRY_AGENT01_MODEL_PROFILE: ${{ runner.temp }}/agent01-model-profile.json
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts --no-audit --no-fund > "$RUNNER_TEMP/core-private-logs/npm.log" 2>&1
+          npm run build > "$RUNNER_TEMP/core-private-logs/build.log" 2>&1
+          FOUNDRY_BUILDER_MODEL_ASSETS="$RUNNER_TEMP/agent01-model" npm run verify:runtime-http > "$RUNNER_TEMP/core-private-logs/runtime.log" 2>&1
+      - name: Preserve only verified fixture metrics and runtime source IDs
+        env:
+          FOUNDRY_AGENT01_MODEL_PROFILE: ${{ runner.temp }}/agent01-model-profile.json
+        run: |
+          uv run --project .integration/platform --no-sync python tools/capture_core_agent01_receipt.py \
+            --core .integration/core --platform .integration/platform \
+            --profile "$FOUNDRY_AGENT01_MODEL_PROFILE" --log "$RUNNER_TEMP/core-private-logs/runtime.log" \
+            --core-commit b59de193c4076ea52c2030a5eaf2ec48d2f14627 \
+            --platform-commit 7f0d59d731be8e99a112a7951fb62d4ea63e05c4 \
+            --run-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --output "$RUNNER_TEMP/core-agent01-receipt.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: core-agent01-qualified-runtime
+          path: ${{ runner.temp }}/core-agent01-receipt.json
+          if-no-files-found: error
