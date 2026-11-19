@@ -9,8 +9,7 @@ import zipfile
 
 from engineering_agent.builder import BuilderBoundaryError
 from engineering_agent.functional_oracle import FunctionalOracleCommand
-from engineering_agent.model_host import DEFAULT_PROFILE, RUNTIME
-from dataclasses import replace
+from engineering_agent.model_host import RUNTIME
 from platform_agent.builder_verification import verification_ports
 from platform_agent.quality_evaluation import QualityReceipt, quality_report
 from polyglot_acceptance import NODE, GO
@@ -86,7 +85,7 @@ def configure(case, workspace, evidence, private, python_image):
     return verifier
 
 
-def observe(worker, *, case, code, peers, database, model_contexts, inference, evidence):
+def observe(worker, *, case, code, peers, database, model_contexts, inference, evidence, model_profile):
     try:
         assert worker.run_once()
     except BuilderBoundaryError:
@@ -129,9 +128,9 @@ def observe(worker, *, case, code, peers, database, model_contexts, inference, e
         assert db.execute("SELECT count(*) FROM foundry_waw_invocation_claim").fetchone() == (1,)
         assert db.execute("SELECT reserved_paid_invocations FROM foundry_budget_scope WHERE scope_type='task'").fetchone() == (1,)
     provider, model, cost, inputs, outputs = rows[0]
-    assert provider == "foundry-selfhosted" and model == DEFAULT_PROFILE.model_id
+    assert provider == "foundry-selfhosted" and model == model_profile.model_id
     assert cost == result.execution.used_model_microusd == step.usage_microusd
-    identity = replace(DEFAULT_PROFILE, max_output_tokens=512).identity()
+    identity = model_profile.identity()
     return QualityReceipt(case["case_id"], case["language"], model, identity["profile_sha256"], RUNTIME.sha256,
         digest, oracle_sha, result.execution.status, inputs, outputs, cost, 1, step.verification.evidence_refs)
 

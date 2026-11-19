@@ -227,12 +227,18 @@ def quality_coding_runtime(tmp_path_factory):
     from public_quality import report
     if os.environ.get("FOUNDRY_BUILDER_REAL_DOCKER") != "1":
         pytest.fail("public quality requires actual isolated runtime execution")
+    from dataclasses import replace
+    from engineering_agent.model_host import DEFAULT_PROFILE
+    from engineering_agent.model_profiles import load_model_profile
+    profile_path = os.environ.get("FOUNDRY_QUALITY_MODEL_PROFILE")
+    profile = replace(load_model_profile(Path(profile_path)) if profile_path else DEFAULT_PROFILE,
+        max_output_tokens=512)
     receipts = []
     directory = tmp_path_factory.mktemp("public-quality")
     with live_model(directory / "llama", Path(os.environ["FOUNDRY_BUILDER_MODEL_ASSETS"]),
-                    max_output_tokens=512) as runtime:
+                    max_output_tokens=512, approved_profile=profile) as runtime:
         try:
-            yield runtime, receipts
+            yield runtime, receipts, profile
         finally:
             result = report(receipts)
             print("PUBLIC_QUALITY_REPORT=" + json.dumps(result, sort_keys=True))
@@ -271,8 +277,13 @@ def test_core_builder_runs_metered_model_and_final_scanned_zip(database, tmp_pat
     project = sandbox == "project"
     from work_unit_fixture import FILES, PARTS, PATHS, UNITS, assigned_unit, verifiers as project_verifiers
     h = Harness(tmp_path, monkeypatch)
+    quality_receipts, quality_profile, quality_runtime = None, None, None
+    if quality:
+        quality_runtime, quality_receipts, quality_profile = request.getfixturevalue("quality_coding_runtime")
     if live:
         h.config = replace(h.config, max_input_tokens=4096, max_output_tokens=512 if live_units or polyglot or quality else 192)
+        if quality:
+            h.config = replace(h.config, max_input_tokens=quality_profile.max_input_tokens)
     elif project:
         h.config = replace(h.config, max_input_tokens=4096, max_output_tokens=3072)
     prepare(h, database)
@@ -292,7 +303,7 @@ def test_core_builder_runs_metered_model_and_final_scanned_zip(database, tmp_pat
         if live else "Build a tenant-isolated application in approved work units"
         if project else "Build a function returning 42"
     )
-    quality_case, quality_receipts = None, None
+    quality_case = None
     if quality:
         from public_quality import CASES, goal
         quality_case = next(case for case in CASES if case["case_id"] == sandbox)
@@ -381,7 +392,7 @@ def test_core_builder_runs_metered_model_and_final_scanned_zip(database, tmp_pat
         from live_coding_model import MODEL_ID
 
         if quality:
-            (provider_origin, secret), quality_receipts = request.getfixturevalue("quality_coding_runtime")
+            provider_origin, secret = quality_runtime
         else:
             provider_origin, secret = request.getfixturevalue("live_coding_runtime")
         model_id = MODEL_ID
@@ -538,7 +549,7 @@ class OrderTotals(unittest.TestCase):
         if quality:
             from public_quality import observe
             receipt = observe(worker, case=quality_case, code=code, peers=peers, database=database,
-                model_contexts=model_contexts, inference=inference, evidence=evidence)
+                model_contexts=model_contexts, inference=inference, evidence=evidence, model_profile=quality_profile)
             quality_receipts.append(receipt)
             print("PUBLIC_QUALITY_CASE=" + json.dumps(receipt.case_id) + ":" + receipt.outcome)
             return

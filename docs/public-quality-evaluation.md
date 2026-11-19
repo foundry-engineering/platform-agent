@@ -34,7 +34,8 @@ results; it never imports or executes candidate code. A zero process exit withou
 correct values fails. Go nil and empty slices are treated as equivalent, matching
 the selected upstream tests' semantics. Boolean/integer substitutions, partial
 vectors, extra prints and invalid JSON fail. Host evidence v3 commits to the
-expected vector; expected answers are absent from the model request and ZIP.
+expected vector; the host oracle vectors are absent from the model request and ZIP. Public
+examples in the upstream function specifications remain visible as task data.
 
 The private operator sandbox profile may add `oracleFile` per check. It must
 name an absolute, private, regular, non-symlink file outside the candidate
@@ -58,6 +59,12 @@ candidate fails; only `regressionGatePassed: true` means all nine observed cases
 passed. `releaseApproved` and `marketRankClaim` always remain false.
 
 The Engineering model-host profiles also prepare frozen larger GGUF candidates.
-No larger model is downloaded, qualified or activated by this evaluation. An
+No larger model is downloaded, qualified or activated by the default CI evaluation.
+On a separately approved sufficiently sized host, the same fixed nine-case
+harness can evaluate pre-provisioned alternative weights by setting
+`FOUNDRY_QUALITY_MODEL_PROFILE` to a private approved model profile and
+`FOUNDRY_BUILDER_MODEL_ASSETS` to their verified cache. The harness fixes the
+output ceiling at 512 and records that effective profile digest, derives its
+input reservation from the selected profile and rejects mixed identities. An
 approved sufficiently sized persistent host and complete deployment acceptance
 remain necessary for production operation. No paid hosting is provisioned here.

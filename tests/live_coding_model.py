@@ -14,6 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from engineering_agent.model_host import MODEL_ID as MODEL_ID, DEFAULT_PROFILE, RUNTIME
+from engineering_agent.model_profiles import ModelProfile
 
 
 def _port() -> int:
@@ -45,7 +46,8 @@ def _wait_ready(server: subprocess.Popen[bytes], port: int, identity: dict[str, 
 
 
 @contextmanager
-def live_model(directory: Path, assets: Path, *, max_output_tokens: int = 192) -> Iterator[tuple[str, str]]:
+def live_model(directory: Path, assets: Path, *, max_output_tokens: int = 192,
+               approved_profile: ModelProfile = DEFAULT_PROFILE) -> Iterator[tuple[str, str]]:
     """Yield the managed Runner endpoint and its temporary test credential."""
     if type(max_output_tokens) is not int or not 128 <= max_output_tokens <= 512:
         raise ValueError("explicit bounded test-model output allowance required")
@@ -58,7 +60,7 @@ def live_model(directory: Path, assets: Path, *, max_output_tokens: int = 192) -
     secret = directory / "runner-token"
     secret.touch(mode=0o600, exist_ok=False)
     secret.write_text(token + "\n", encoding="ascii")
-    profile = replace(DEFAULT_PROFILE, max_output_tokens=max_output_tokens)
+    profile = replace(approved_profile, max_output_tokens=max_output_tokens)
     profile_path = directory / "approved-model.json"
     profile_path.touch(mode=0o600, exist_ok=False)
     profile_path.write_text(json.dumps(profile.as_payload()), encoding="utf-8")
