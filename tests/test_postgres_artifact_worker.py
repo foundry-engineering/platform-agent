@@ -30,6 +30,7 @@ from platform_agent.core_work_authority_issuer import ArtifactWorkPolicy
 from platform_agent.postgres_artifact_budget import ArtifactBudgetRegistrationError, PostgresArtifactBudgetRegistrar
 from test_core_execution_authorizer import Harness
 from worker_counterparties import Counterparties
+from public_quality import CASE_IDS
 
 
 @pytest.fixture
@@ -220,7 +221,29 @@ def live_coding_runtime(tmp_path, request):
         yield runtime
 
 
-@pytest.mark.parametrize("sandbox", ["unit", "docker", "project", "live", "live_units", "live_auto", "live_polyglot"])
+@pytest.fixture(scope="module")
+def quality_coding_runtime(tmp_path_factory):
+    from live_coding_model import live_model
+    from public_quality import report
+    if os.environ.get("FOUNDRY_BUILDER_REAL_DOCKER") != "1":
+        pytest.fail("public quality requires actual isolated runtime execution")
+    receipts = []
+    directory = tmp_path_factory.mktemp("public-quality")
+    with live_model(directory / "llama", Path(os.environ["FOUNDRY_BUILDER_MODEL_ASSETS"]),
+                    max_output_tokens=512) as runtime:
+        try:
+            yield runtime, receipts
+        finally:
+            result = report(receipts)
+            print("PUBLIC_QUALITY_REPORT=" + json.dumps(result, sort_keys=True))
+            if os.environ.get("FOUNDRY_QUALITY_REPORT"):
+                target = Path(os.environ["FOUNDRY_QUALITY_REPORT"])
+                with target.open("x", encoding="utf-8") as file:
+                    target.chmod(0o600)
+                    json.dump(result, file, sort_keys=True, indent=2)
+
+
+@pytest.mark.parametrize("sandbox", ["unit", "docker", "project", "live", "live_units", "live_auto", "live_polyglot", *CASE_IDS])
 def test_core_builder_runs_metered_model_and_final_scanned_zip(database, tmp_path, monkeypatch, sandbox, request):
     """Signed Builder with actual persistence and optional real model and Docker."""
     import io
@@ -235,11 +258,12 @@ def test_core_builder_runs_metered_model_and_final_scanned_zip(database, tmp_pat
     from platform_agent.core_builder_runtime import CoreBuilderConfiguration, CoreBuilderWorker
     from platform_agent.grant_signing import ExecutionGrantSigner, sign_execution_grant
     from builder_runtime_fixture import Harness as CodeHarness, IMAGE
-    if sandbox in {"live", "live_units", "live_auto", "live_polyglot"} and not os.environ.get("FOUNDRY_BUILDER_MODEL_ASSETS"):
+    quality = sandbox in CASE_IDS
+    if (quality or sandbox in {"live", "live_units", "live_auto", "live_polyglot"}) and not os.environ.get("FOUNDRY_BUILDER_MODEL_ASSETS"):
         pytest.skip("live model weights are explicitly configured in acceptance")
     if sandbox in {"docker", "project"} and os.environ.get("FOUNDRY_BUILDER_REAL_DOCKER") != "1":
         pytest.skip("actual Docker execution is mandatory in native integration")
-    live = sandbox in {"live", "live_units", "live_auto", "live_polyglot"}
+    live = quality or sandbox in {"live", "live_units", "live_auto", "live_polyglot"}
     live_units = sandbox in {"live_units", "live_auto"}
     auto = sandbox == "live_auto"
     polyglot = sandbox == "live_polyglot"
@@ -248,7 +272,7 @@ def test_core_builder_runs_metered_model_and_final_scanned_zip(database, tmp_pat
     from work_unit_fixture import FILES, PARTS, PATHS, UNITS, assigned_unit, verifiers as project_verifiers
     h = Harness(tmp_path, monkeypatch)
     if live:
-        h.config = replace(h.config, max_input_tokens=4096, max_output_tokens=512 if live_units or polyglot else 192)
+        h.config = replace(h.config, max_input_tokens=4096, max_output_tokens=512 if live_units or polyglot or quality else 192)
     elif project:
         h.config = replace(h.config, max_input_tokens=4096, max_output_tokens=3072)
     prepare(h, database)
@@ -268,7 +292,14 @@ def test_core_builder_runs_metered_model_and_final_scanned_zip(database, tmp_pat
         if live else "Build a tenant-isolated application in approved work units"
         if project else "Build a function returning 42"
     )
-    h.job = replace(h.job, objective=objective)
+    quality_case, quality_receipts = None, None
+    if quality:
+        from public_quality import CASES, goal
+        quality_case = next(case for case in CASES if case["case_id"] == sandbox)
+        objective = goal(quality_case)
+    h.job = replace(h.job, objective=objective, id=h.job.id + "-" + sandbox if quality else h.job.id)
+    if quality:
+        h.transport.document["executionJobId"] = h.job.id
     code_root = tmp_path / "builder"
     code_root.mkdir(mode=0o700)
     code = CodeHarness(code_root)
@@ -278,7 +309,7 @@ def test_core_builder_runs_metered_model_and_final_scanned_zip(database, tmp_pat
     code.task = replace(code.task, tenant_id=h.config.tenant_id, project_id=h.config.project_id,
         cell_id=snapshot.context.cell_id,
         goal=h.job.objective, model_budget_microusd=h.job.provider_budget_microusd,
-        max_rounds=4 if live_units else code.task.max_rounds)
+        max_rounds=1 if quality else 4 if live_units else code.task.max_rounds)
     grant = {key: value for key, value in code.grant.items() if key != "signatures"}
     grant["tenant_context"] = snapshot.context.as_dict()
     grant["agent_id"] = h.config.canonical_agent_id
@@ -349,7 +380,10 @@ def test_core_builder_runs_metered_model_and_final_scanned_zip(database, tmp_pat
     if live:
         from live_coding_model import MODEL_ID
 
-        provider_origin, secret = request.getfixturevalue("live_coding_runtime")
+        if quality:
+            (provider_origin, secret), quality_receipts = request.getfixturevalue("quality_coding_runtime")
+        else:
+            provider_origin, secret = request.getfixturevalue("live_coding_runtime")
         model_id = MODEL_ID
     else:
         model_id = "core-builder-inference-fixture"
@@ -479,24 +513,35 @@ class OrderTotals(unittest.TestCase):
         report_model_errors(monkeypatch)
         live_paths, matrix = configure_polyglot(code.workspace, IMAGE)
         verifier = DockerSandboxMatrixVerifier(workspace=code.workspace, evidence_dir=evidence, matrix=matrix)
+    if quality:
+        from public_quality import configure
+        verifier = configure(quality_case, code.workspace, evidence, code_root / "oracles", IMAGE)
+        live_paths = (quality_case["source_path"],)
     if sandbox == 'unit':
         verifier = code.verifier
     unit_verifiers = live_verifiers if live_units else None
     if project:
         verifier, unit_verifiers = project_verifiers(code.workspace, evidence, docker=True)
     try:
-        if live:
+        if live and not quality:
             baseline = verifier.verify(code.task, round_number=1)
             assert not baseline.passed and baseline.evidence_refs
         worker = CoreBuilderWorker(control=control,
             configuration=CoreBuilderConfiguration(code.task, h.config, h.job.work_node_id,
-                PATHS if project else live_paths if live_units or polyglot else ('src/app.py',), code.workspace, code.state,
+                PATHS if project else live_paths if live_units or polyglot or quality else ('src/app.py',), code.workspace, code.state,
                 work_units=UNITS if project else live_work_units, automatic_plan=automatic_plan, diagnose_first=polyglot),
             authority_factory=lambda check: code.authority(execution_checkpoint=check), worker_factory=factory,
             verifier=verifier, artifacts=code.artifacts,
             tenant_context=lambda: h.admissions.current_context(h.config.tenant_id,h.config.project_id),
             skill_id=h.package['skill_id'], skill_contract_sha256=h.package['skill_contract_sha256'],
             clock=lambda: h.now, unit_verifiers=unit_verifiers)
+        if quality:
+            from public_quality import observe
+            receipt = observe(worker, case=quality_case, code=code, peers=peers, database=database,
+                model_contexts=model_contexts, inference=inference, evidence=evidence)
+            quality_receipts.append(receipt)
+            print("PUBLIC_QUALITY_CASE=" + json.dumps(receipt.case_id) + ":" + receipt.outcome)
+            return
         assert worker.run_once()
         assert len([x for x in peers.events if x.get('type') == 'artifact']) == 1
         assert peers.events[-1]['outcome'] == 'completed'

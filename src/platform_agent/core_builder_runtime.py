@@ -219,8 +219,15 @@ class CoreBuilderWorker:
         self._unit_verifiers = unit_verifiers
         self._context, self._skill, self._contract = tenant_context, skill_id, skill_contract_sha256
         self._clock = clock
+        self._last_attempt: BuilderDeliveryResult | None = None
+
+    @property
+    def last_attempt(self) -> BuilderDeliveryResult | None:
+        """Frozen observed result; never means Core has published or approved it."""
+        return self._last_attempt
 
     def run_once(self) -> bool:
+        self._last_attempt = None
         job = self._control.claim()
         if job is None:
             return False
@@ -248,6 +255,7 @@ class CoreBuilderWorker:
                 artifacts=self._artifacts, state_directory=config.state_directory,
                 work_units=config.work_units, unit_verifiers=self._unit_verifiers,
                 automatic_plan=config.automatic_plan, diagnose_first=config.diagnose_first).run()
+            self._last_attempt = completed
             model.publish(completed, self._artifacts, authority.context)
             return True
         except Exception:

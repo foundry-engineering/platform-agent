@@ -18,6 +18,7 @@ from engineering_agent.selfhosted_model import (
 from engineering_agent.source_context import ScopedSourceContext
 
 from polyglot_acceptance import POLYGLOT_OBJECTIVE, configure_polyglot
+from public_quality import CASES, goal
 
 
 @pytest.mark.parametrize("diagnostic_size,accepted", [(384, True), (1200, False)])
@@ -117,3 +118,36 @@ def test_full_polyglot_prompt_respects_managed_input_ceiling(tmp_path, diagnosti
         with pytest.raises(ModelServiceError, match="prepaid input budget"):
             service.execute(payload, bearer="r" * 40, idempotency_key=key)
         assert not inference.requests
+
+
+
+
+@pytest.mark.parametrize("case", CASES, ids=[case["case_id"] for case in CASES])
+def test_predeclared_quality_source_fits_actual_host_input_ceiling(tmp_path, case):
+    """Controlled inference validates capacity only, never model quality."""
+    import dataclasses
+    path = tmp_path / case["source_path"]
+    path.parent.mkdir()
+    path.write_text(case["source_template"])
+    snapshots = ScopedSourceContext(tmp_path, (case["source_path"],)).snapshot()
+    class Inference:
+        def complete(self, *, endpoint, token, payload, timeout_seconds):
+            assert sum(len(m["content"].encode()) for m in payload["messages"]) <= 3072 - 256
+            return {"model": payload["model"], "choices":[{"finish_reason":"stop", "message":{
+                "content":json.dumps({"files":[{"path":case["source_path"], "content":case["source_template"]}]})}}],
+                "usage":{"prompt_tokens":64,"completion_tokens":24,"total_tokens":88}}
+    from engineering_agent.model_host import DEFAULT_PROFILE
+    settings = ModelSettings(model_id=DEFAULT_PROFILE.model_id,
+        upstream_url="http://127.0.0.1:8000/v1/chat/completions", upstream_api_key="u"*40,
+        runner_api_key="r"*40, policy_sha256="a"*64, journal_path=tmp_path / "journal.db",
+        price_input_per_million_microusd=100000, price_output_per_million_microusd=100000,
+        max_input_tokens=dataclasses.replace(DEFAULT_PROFILE, max_output_tokens=512).max_input_tokens,
+        max_output_tokens=512)
+    service = RealCodingModelService(settings, inference=Inference())
+    fields = ("jobId","tenantId","workspaceId","projectId","workNodeId","assignmentId","authorityId",
+              "agentId","runId","admissionId","roleId","skillId","packageId","artifactId")
+    payload = {field:"valid_"+field for field in fields}
+    payload.update(taskId="tsk_"+"a"*32,objective=goal(case),allowedActions=["read_context","produce_artifact"],
+        providerBudgetMicrousd=1000000,sourceContext=[s.as_payload() for s in snapshots],verificationFeedback=[])
+    key="foundry_"+hashlib.sha256(json.dumps([payload["tenantId"],payload["workspaceId"],payload["jobId"]],separators=(",",":")).encode()).hexdigest()
+    service.execute(payload,bearer="r"*40,idempotency_key=key)

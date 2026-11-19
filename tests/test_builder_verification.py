@@ -73,3 +73,55 @@ def test_signed_runtime_retains_initial_diagnosis_in_sealed_private_manifest(tmp
     assert manifest["initial_verification"]["evidence_refs"]
     assert manifest["delivery_verification"]["passed"] is True
     assert len(manifest["steps"]) == 2
+
+
+def test_private_host_oracle_is_loaded_before_model_work(tmp_path):
+    h = Harness(tmp_path)
+    evidence = tmp_path / "evidence"
+    evidence.mkdir(mode=0o700)
+    private = tmp_path / "private"
+    private.mkdir(mode=0o700)
+    oracle = private / "oracle.json"
+    oracle.touch(mode=0o600)
+    oracle.write_text(json.dumps({"schemaVersion":"foundry.functional-oracle.v1",
+        "expectedResults":[42], "nilEqualsEmpty":False}))
+    config = profile()
+    config["checks"][0]["oracleFile"] = str(oracle)
+    verifier, units, diagnose = verification_ports(value=config, workspace=h.workspace,
+        evidence_dir=evidence, work_units=())
+    assert verifier is not None and units is None and not diagnose
+    assert not h.runner.requests and not list(evidence.glob("*.json"))
+
+
+@pytest.mark.parametrize("unsafe", ["workspace", "symlink", "public", "extra", "duplicate", "missing"])
+def test_host_oracle_never_comes_from_candidate_or_ambiguous_config(tmp_path, unsafe):
+    h = Harness(tmp_path)
+    evidence = tmp_path / "evidence"
+    evidence.mkdir(mode=0o700)
+    private = tmp_path / "private"
+    private.mkdir(mode=0o700)
+    oracle = private / "oracle.json"
+    oracle.touch(mode=0o600)
+    value = {"schemaVersion":"foundry.functional-oracle.v1", "expectedResults":[42], "nilEqualsEmpty":False}
+    if unsafe == "extra":
+        value["modelMayEdit"] = True
+    oracle.write_text(json.dumps(value))
+    if unsafe == "workspace":
+        moved = h.workspace / "oracle.json"
+        oracle.rename(moved)
+        oracle = moved
+    if unsafe == "symlink":
+        link = private / "link.json"
+        link.symlink_to(oracle)
+        oracle = link
+    if unsafe == "public":
+        oracle.chmod(0o644)
+    if unsafe == "duplicate":
+        oracle.write_text('{"schemaVersion":"foundry.functional-oracle.v1","expectedResults":[42],"expectedResults":[0],"nilEqualsEmpty":false}')
+    if unsafe == "missing":
+        oracle.unlink()
+    config = profile()
+    config["checks"][0]["oracleFile"] = str(oracle)
+    with pytest.raises((WorkerConfigurationError, ValueError, OSError)):
+        verification_ports(value=config, workspace=h.workspace, evidence_dir=evidence, work_units=())
+    assert not h.runner.requests and not list(evidence.glob("*.json"))

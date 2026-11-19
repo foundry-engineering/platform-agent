@@ -1,0 +1,699 @@
+{
+  "schemaVersion": "foundry.public-quality-suite.v1",
+  "selection": "HumanEval 0,10,30 in Python, JavaScript and Go; fixed before model evaluation",
+  "training_use": "forbidden",
+  "market_rank_claim": false,
+  "release_approved": false,
+  "cases": [
+    {
+      "case_id": "multiple-py-0",
+      "task": "HumanEval_0_has_close_elements",
+      "language": "py",
+      "entry_point": "has_close_elements",
+      "source_path": "src/candidate.py",
+      "source_template": "from typing import List\n\n\ndef has_close_elements(numbers: List[float], threshold: float) -> bool:\n    \"\"\" Check if in given list of numbers, are any two numbers closer to each other than\n    given threshold.\n    >>> has_close_elements([1.0, 2.0, 3.0], 0.5)\n    False\n    >>> has_close_elements([1.0, 2.8, 3.0, 4.0, 5.0, 2.0], 0.3)\n    True\n    \"\"\"\n    raise NotImplementedError(\"candidate not implemented\")\n",
+      "calls": [
+        {
+          "arguments": [
+            [
+              1.0,
+              2.0,
+              3.9,
+              4.0,
+              5.0,
+              2.2
+            ],
+            0.3
+          ],
+          "expected": true
+        },
+        {
+          "arguments": [
+            [
+              1.0,
+              2.0,
+              3.9,
+              4.0,
+              5.0,
+              2.2
+            ],
+            0.05
+          ],
+          "expected": false
+        },
+        {
+          "arguments": [
+            [
+              1.0,
+              2.0,
+              5.9,
+              4.0,
+              5.0
+            ],
+            0.95
+          ],
+          "expected": true
+        },
+        {
+          "arguments": [
+            [
+              1.0,
+              2.0,
+              5.9,
+              4.0,
+              5.0
+            ],
+            0.8
+          ],
+          "expected": false
+        },
+        {
+          "arguments": [
+            [
+              1.0,
+              2.0,
+              3.0,
+              4.0,
+              5.0,
+              2.0
+            ],
+            0.1
+          ],
+          "expected": true
+        },
+        {
+          "arguments": [
+            [
+              1.1,
+              2.2,
+              3.1,
+              4.1,
+              5.1
+            ],
+            1.0
+          ],
+          "expected": true
+        },
+        {
+          "arguments": [
+            [
+              1.1,
+              2.2,
+              3.1,
+              4.1,
+              5.1
+            ],
+            0.5
+          ],
+          "expected": false
+        }
+      ],
+      "upstream": {
+        "repository": "nuprl/MultiPL-E",
+        "revision": "3025a531af7450e7df8b96fe0440e9804480bbad",
+        "path": "datasets/originals-with-cleaned-doctests/HumanEval_0_has_close_elements.py",
+        "source_sha256": "2b49fe22565cb04a50188d5882b36df26bfa25a7f78b5f00e63e33c28c825064"
+      }
+    },
+    {
+      "case_id": "multiple-js-0",
+      "task": "HumanEval_0_has_close_elements",
+      "language": "js",
+      "entry_point": "has_close_elements",
+      "source_path": "src/candidate.js",
+      "source_template": "//Check if in given array of numbers, are any two numbers closer to each other than\n// given threshold.\n// >>> has_close_elements([1.0, 2.0, 3.0], 0.5)\n// false\n// >>> has_close_elements([1.0, 2.8, 3.0, 4.0, 5.0, 2.0], 0.3)\n// true\nfunction has_close_elements(numbers, threshold){\nthrow new Error(\"candidate not implemented\");\n}\n",
+      "calls": [
+        {
+          "arguments": [
+            [
+              1.0,
+              2.0,
+              3.9,
+              4.0,
+              5.0,
+              2.2
+            ],
+            0.3
+          ],
+          "expected": true
+        },
+        {
+          "arguments": [
+            [
+              1.0,
+              2.0,
+              3.9,
+              4.0,
+              5.0,
+              2.2
+            ],
+            0.05
+          ],
+          "expected": false
+        },
+        {
+          "arguments": [
+            [
+              1.0,
+              2.0,
+              5.9,
+              4.0,
+              5.0
+            ],
+            0.95
+          ],
+          "expected": true
+        },
+        {
+          "arguments": [
+            [
+              1.0,
+              2.0,
+              5.9,
+              4.0,
+              5.0
+            ],
+            0.8
+          ],
+          "expected": false
+        },
+        {
+          "arguments": [
+            [
+              1.0,
+              2.0,
+              3.0,
+              4.0,
+              5.0,
+              2.0
+            ],
+            0.1
+          ],
+          "expected": true
+        },
+        {
+          "arguments": [
+            [
+              1.1,
+              2.2,
+              3.1,
+              4.1,
+              5.1
+            ],
+            1.0
+          ],
+          "expected": true
+        },
+        {
+          "arguments": [
+            [
+              1.1,
+              2.2,
+              3.1,
+              4.1,
+              5.1
+            ],
+            0.5
+          ],
+          "expected": false
+        }
+      ],
+      "upstream": {
+        "url": "https://huggingface.co/datasets/nuprl/MultiPL-E/resolve/28441b6024e71d4a1c1c0f6bf171c935cd5a43f2/humaneval-js/test-00000-of-00001.parquet",
+        "asset_sha256": "037debd61e3e98ee9da684054ef522d45200ce622ae36b2fab3bbb27769fa51d",
+        "record": "HumanEval_0_has_close_elements",
+        "record_sha256": "5c61c5083e73fe3ecc09e761b405a72fe86df7ee314021229f8441726704a8d4"
+      }
+    },
+    {
+      "case_id": "multiple-go-0",
+      "task": "HumanEval_0_has_close_elements",
+      "language": "go",
+      "entry_point": "has_close_elements",
+      "source_path": "src/candidate.go",
+      "source_template": "package main\n\n\n// Check if in given list of numbers, are any two numbers closer to each other than\n// given threshold.\n// >>> has_close_elements([]float64{1.0, 2.0, 3.0}, 0.5)\n// false\n// >>> has_close_elements([]float64{1.0, 2.8, 3.0, 4.0, 5.0, 2.0}, 0.3)\n// true\nfunc has_close_elements(numbers []float64, threshold float64) bool {\npanic(\"candidate not implemented\")\n}\n",
+      "calls": [
+        {
+          "arguments": [
+            [
+              1.0,
+              2.0,
+              3.9,
+              4.0,
+              5.0,
+              2.2
+            ],
+            0.3
+          ],
+          "expected": true
+        },
+        {
+          "arguments": [
+            [
+              1.0,
+              2.0,
+              3.9,
+              4.0,
+              5.0,
+              2.2
+            ],
+            0.05
+          ],
+          "expected": false
+        },
+        {
+          "arguments": [
+            [
+              1.0,
+              2.0,
+              5.9,
+              4.0,
+              5.0
+            ],
+            0.95
+          ],
+          "expected": true
+        },
+        {
+          "arguments": [
+            [
+              1.0,
+              2.0,
+              5.9,
+              4.0,
+              5.0
+            ],
+            0.8
+          ],
+          "expected": false
+        },
+        {
+          "arguments": [
+            [
+              1.0,
+              2.0,
+              3.0,
+              4.0,
+              5.0,
+              2.0
+            ],
+            0.1
+          ],
+          "expected": true
+        },
+        {
+          "arguments": [
+            [
+              1.1,
+              2.2,
+              3.1,
+              4.1,
+              5.1
+            ],
+            1.0
+          ],
+          "expected": true
+        },
+        {
+          "arguments": [
+            [
+              1.1,
+              2.2,
+              3.1,
+              4.1,
+              5.1
+            ],
+            0.5
+          ],
+          "expected": false
+        }
+      ],
+      "upstream": {
+        "url": "https://huggingface.co/datasets/nuprl/MultiPL-E/resolve/28441b6024e71d4a1c1c0f6bf171c935cd5a43f2/humaneval-go/test-00000-of-00001.parquet",
+        "asset_sha256": "0ea500a7b7a05e80d42512d77a9a8362ba3372d1792a19cd5da79818aa0bb5a2",
+        "record": "HumanEval_0_has_close_elements",
+        "record_sha256": "940912fb5abceb7541123161894f38f185bf70baf7aee1b38e9c3ec33a3a1ec9"
+      }
+    },
+    {
+      "case_id": "multiple-py-10",
+      "task": "HumanEval_10_make_palindrome",
+      "language": "py",
+      "entry_point": "make_palindrome",
+      "source_path": "src/candidate.py",
+      "source_template": "def make_palindrome(string: str) -> str:\n    \"\"\" Find the shortest palindrome that begins with a supplied string.\n    Algorithm idea is simple:\n    - Find the longest postfix of supplied string that is a palindrome.\n    - Append to the end of the string reverse of a string prefix that comes before the palindromic suffix.\n    >>> make_palindrome('')\n    ''\n    >>> make_palindrome('cat')\n    'catac'\n    >>> make_palindrome('cata')\n    'catac'\n    \"\"\"\n    raise NotImplementedError(\"candidate not implemented\")\n",
+      "calls": [
+        {
+          "arguments": [
+            ""
+          ],
+          "expected": ""
+        },
+        {
+          "arguments": [
+            "x"
+          ],
+          "expected": "x"
+        },
+        {
+          "arguments": [
+            "xyz"
+          ],
+          "expected": "xyzyx"
+        },
+        {
+          "arguments": [
+            "xyx"
+          ],
+          "expected": "xyx"
+        },
+        {
+          "arguments": [
+            "jerry"
+          ],
+          "expected": "jerryrrej"
+        }
+      ],
+      "upstream": {
+        "repository": "nuprl/MultiPL-E",
+        "revision": "3025a531af7450e7df8b96fe0440e9804480bbad",
+        "path": "datasets/originals-with-cleaned-doctests/HumanEval_10_make_palindrome.py",
+        "source_sha256": "6d5cce5b648719b04c12cc86b6dbd4d2972933fd1f2b9a08e790b4aba850b291"
+      }
+    },
+    {
+      "case_id": "multiple-js-10",
+      "task": "HumanEval_10_make_palindrome",
+      "language": "js",
+      "entry_point": "make_palindrome",
+      "source_path": "src/candidate.js",
+      "source_template": "//Find the shortest palindrome that begins with a supplied string.\n// Algorithm idea is simple:\n// - Find the longest postfix of supplied string that is a palindrome.\n// - Append to the end of the string reverse of a string prefix that comes before the palindromic suffix.\n// >>> make_palindrome(\"\")\n// \"\"\n// >>> make_palindrome(\"cat\")\n// \"catac\"\n// >>> make_palindrome(\"cata\")\n// \"catac\"\nfunction make_palindrome(string){\nthrow new Error(\"candidate not implemented\");\n}\n",
+      "calls": [
+        {
+          "arguments": [
+            ""
+          ],
+          "expected": ""
+        },
+        {
+          "arguments": [
+            "x"
+          ],
+          "expected": "x"
+        },
+        {
+          "arguments": [
+            "xyz"
+          ],
+          "expected": "xyzyx"
+        },
+        {
+          "arguments": [
+            "xyx"
+          ],
+          "expected": "xyx"
+        },
+        {
+          "arguments": [
+            "jerry"
+          ],
+          "expected": "jerryrrej"
+        }
+      ],
+      "upstream": {
+        "url": "https://huggingface.co/datasets/nuprl/MultiPL-E/resolve/28441b6024e71d4a1c1c0f6bf171c935cd5a43f2/humaneval-js/test-00000-of-00001.parquet",
+        "asset_sha256": "037debd61e3e98ee9da684054ef522d45200ce622ae36b2fab3bbb27769fa51d",
+        "record": "HumanEval_10_make_palindrome",
+        "record_sha256": "7b18e0ef39040184b453136cd94a54b1ef06cd6dc3c51be449f227acc5524cfb"
+      }
+    },
+    {
+      "case_id": "multiple-go-10",
+      "task": "HumanEval_10_make_palindrome",
+      "language": "go",
+      "entry_point": "make_palindrome",
+      "source_path": "src/candidate.go",
+      "source_template": "package main\n\n\n// Find the shortest palindrome that begins with a supplied string.\n// Algorithm idea is simple:\n// - Find the longest postfix of supplied string that is a palindrome.\n// - Append to the end of the string reverse of a string prefix that comes before the palindromic suffix.\n// >>> make_palindrome(\"\")\n// \"\"\n// >>> make_palindrome(\"cat\")\n// \"catac\"\n// >>> make_palindrome(\"cata\")\n// \"catac\"\nfunc make_palindrome(myString string) string {\npanic(\"candidate not implemented\")\n}\n",
+      "calls": [
+        {
+          "arguments": [
+            ""
+          ],
+          "expected": ""
+        },
+        {
+          "arguments": [
+            "x"
+          ],
+          "expected": "x"
+        },
+        {
+          "arguments": [
+            "xyz"
+          ],
+          "expected": "xyzyx"
+        },
+        {
+          "arguments": [
+            "xyx"
+          ],
+          "expected": "xyx"
+        },
+        {
+          "arguments": [
+            "jerry"
+          ],
+          "expected": "jerryrrej"
+        }
+      ],
+      "upstream": {
+        "url": "https://huggingface.co/datasets/nuprl/MultiPL-E/resolve/28441b6024e71d4a1c1c0f6bf171c935cd5a43f2/humaneval-go/test-00000-of-00001.parquet",
+        "asset_sha256": "0ea500a7b7a05e80d42512d77a9a8362ba3372d1792a19cd5da79818aa0bb5a2",
+        "record": "HumanEval_10_make_palindrome",
+        "record_sha256": "f8206f5482c8a66cbff9819b02c7e618518d4088203fd158e963beba9816b866"
+      }
+    },
+    {
+      "case_id": "multiple-py-30",
+      "task": "HumanEval_30_get_positive",
+      "language": "py",
+      "entry_point": "get_positive",
+      "source_path": "src/candidate.py",
+      "source_template": "from typing import List\n\ndef get_positive(l: List[int]) -> List[int]:\n    \"\"\"Return only positive numbers in the list.\n    >>> get_positive([-1, 2, -4, 5, 6])\n    [2, 5, 6]\n    >>> get_positive([5, 3, -5, 2, -3, 3, 9, 0, 123, 1, -10])\n    [5, 3, 2, 3, 9, 123, 1]\n    \"\"\"\n    raise NotImplementedError(\"candidate not implemented\")\n",
+      "calls": [
+        {
+          "arguments": [
+            [
+              -1,
+              -2,
+              4,
+              5,
+              6
+            ]
+          ],
+          "expected": [
+            4,
+            5,
+            6
+          ]
+        },
+        {
+          "arguments": [
+            [
+              5,
+              3,
+              -5,
+              2,
+              3,
+              3,
+              9,
+              0,
+              123,
+              1,
+              -10
+            ]
+          ],
+          "expected": [
+            5,
+            3,
+            2,
+            3,
+            3,
+            9,
+            123,
+            1
+          ]
+        },
+        {
+          "arguments": [
+            [
+              -1,
+              -2
+            ]
+          ],
+          "expected": []
+        },
+        {
+          "arguments": [
+            []
+          ],
+          "expected": []
+        }
+      ],
+      "upstream": {
+        "repository": "nuprl/MultiPL-E",
+        "revision": "3025a531af7450e7df8b96fe0440e9804480bbad",
+        "path": "datasets/originals-with-cleaned-doctests/HumanEval_30_get_positive.py",
+        "source_sha256": "ee0c46681b39b2e12647c93155b3f10eb9f124130b916a39ad961a3dcc8ffe1f"
+      }
+    },
+    {
+      "case_id": "multiple-js-30",
+      "task": "HumanEval_30_get_positive",
+      "language": "js",
+      "entry_point": "get_positive",
+      "source_path": "src/candidate.js",
+      "source_template": "//Return only positive numbers in the array.\n// >>> get_positive([-1, 2, -4, 5, 6])\n// [2, 5, 6]\n// >>> get_positive([5, 3, -5, 2, -3, 3, 9, 0, 123, 1, -10])\n// [5, 3, 2, 3, 9, 123, 1]\nfunction get_positive(l){\nthrow new Error(\"candidate not implemented\");\n}\n",
+      "calls": [
+        {
+          "arguments": [
+            [
+              -1,
+              -2,
+              4,
+              5,
+              6
+            ]
+          ],
+          "expected": [
+            4,
+            5,
+            6
+          ]
+        },
+        {
+          "arguments": [
+            [
+              5,
+              3,
+              -5,
+              2,
+              3,
+              3,
+              9,
+              0,
+              123,
+              1,
+              -10
+            ]
+          ],
+          "expected": [
+            5,
+            3,
+            2,
+            3,
+            3,
+            9,
+            123,
+            1
+          ]
+        },
+        {
+          "arguments": [
+            [
+              -1,
+              -2
+            ]
+          ],
+          "expected": []
+        },
+        {
+          "arguments": [
+            []
+          ],
+          "expected": []
+        }
+      ],
+      "upstream": {
+        "url": "https://huggingface.co/datasets/nuprl/MultiPL-E/resolve/28441b6024e71d4a1c1c0f6bf171c935cd5a43f2/humaneval-js/test-00000-of-00001.parquet",
+        "asset_sha256": "037debd61e3e98ee9da684054ef522d45200ce622ae36b2fab3bbb27769fa51d",
+        "record": "HumanEval_30_get_positive",
+        "record_sha256": "2da95d0d2708ffd429c7d0316b673016371a80a8419cbb42af5a03c6e7a82c45"
+      }
+    },
+    {
+      "case_id": "multiple-go-30",
+      "task": "HumanEval_30_get_positive",
+      "language": "go",
+      "entry_point": "get_positive",
+      "source_path": "src/candidate.go",
+      "source_template": "package main\n\n\n// Return only positive numbers in the list.\n// >>> get_positive([]int{-1, 2, -4, 5, 6})\n// []int{2, 5, 6}\n// >>> get_positive([]int{5, 3, -5, 2, -3, 3, 9, 0, 123, 1, -10})\n// []int{5, 3, 2, 3, 9, 123, 1}\nfunc get_positive(l []int) []int {\npanic(\"candidate not implemented\")\n}\n",
+      "calls": [
+        {
+          "arguments": [
+            [
+              -1,
+              -2,
+              4,
+              5,
+              6
+            ]
+          ],
+          "expected": [
+            4,
+            5,
+            6
+          ]
+        },
+        {
+          "arguments": [
+            [
+              5,
+              3,
+              -5,
+              2,
+              3,
+              3,
+              9,
+              0,
+              123,
+              1,
+              -10
+            ]
+          ],
+          "expected": [
+            5,
+            3,
+            2,
+            3,
+            3,
+            9,
+            123,
+            1
+          ]
+        },
+        {
+          "arguments": [
+            [
+              -1,
+              -2
+            ]
+          ],
+          "expected": []
+        },
+        {
+          "arguments": [
+            []
+          ],
+          "expected": []
+        }
+      ],
+      "upstream": {
+        "url": "https://huggingface.co/datasets/nuprl/MultiPL-E/resolve/28441b6024e71d4a1c1c0f6bf171c935cd5a43f2/humaneval-go/test-00000-of-00001.parquet",
+        "asset_sha256": "0ea500a7b7a05e80d42512d77a9a8362ba3372d1792a19cd5da79818aa0bb5a2",
+        "record": "HumanEval_30_get_positive",
+        "record_sha256": "cf2253a69cb68f312742e6bac25756f72b4ae8f073e15b1674886c68b91e0a7a"
+      }
+    }
+  ]
+}
