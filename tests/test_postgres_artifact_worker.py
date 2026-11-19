@@ -214,13 +214,13 @@ def live_coding_runtime(tmp_path, request):
 
     if os.environ.get("FOUNDRY_BUILDER_REAL_DOCKER") != "1":
         pytest.fail("live model acceptance requires the real Docker verifier")
-    output_limit = 512 if request.node.callspec.params.get("sandbox") in {"live_units", "live_auto"} else 192
+    output_limit = 512 if request.node.callspec.params.get("sandbox") in {"live_units", "live_auto", "live_polyglot"} else 192
     with live_model(tmp_path / "llama", Path(os.environ["FOUNDRY_BUILDER_MODEL_ASSETS"]),
                     max_output_tokens=output_limit) as runtime:
         yield runtime
 
 
-@pytest.mark.parametrize("sandbox", ["unit", "docker", "project", "live", "live_units", "live_auto"])
+@pytest.mark.parametrize("sandbox", ["unit", "docker", "project", "live", "live_units", "live_auto", "live_polyglot"])
 def test_core_builder_runs_metered_model_and_final_scanned_zip(database, tmp_path, monkeypatch, sandbox, request):
     """Signed Builder with actual persistence and optional real model and Docker."""
     import io
@@ -235,23 +235,27 @@ def test_core_builder_runs_metered_model_and_final_scanned_zip(database, tmp_pat
     from platform_agent.core_builder_runtime import CoreBuilderConfiguration, CoreBuilderWorker
     from platform_agent.grant_signing import ExecutionGrantSigner, sign_execution_grant
     from builder_runtime_fixture import Harness as CodeHarness, IMAGE
-    if sandbox in {"live", "live_units", "live_auto"} and not os.environ.get("FOUNDRY_BUILDER_MODEL_ASSETS"):
+    if sandbox in {"live", "live_units", "live_auto", "live_polyglot"} and not os.environ.get("FOUNDRY_BUILDER_MODEL_ASSETS"):
         pytest.skip("live model weights are explicitly configured in acceptance")
     if sandbox in {"docker", "project"} and os.environ.get("FOUNDRY_BUILDER_REAL_DOCKER") != "1":
         pytest.skip("actual Docker execution is mandatory in native integration")
-    live = sandbox in {"live", "live_units", "live_auto"}
+    live = sandbox in {"live", "live_units", "live_auto", "live_polyglot"}
     live_units = sandbox in {"live_units", "live_auto"}
     auto = sandbox == "live_auto"
+    polyglot = sandbox == "live_polyglot"
     automatic_plan = None
     project = sandbox == "project"
     from work_unit_fixture import FILES, PARTS, PATHS, UNITS, assigned_unit, verifiers as project_verifiers
     h = Harness(tmp_path, monkeypatch)
     if live:
-        h.config = replace(h.config, max_input_tokens=4096, max_output_tokens=512 if live_units else 192)
+        h.config = replace(h.config, max_input_tokens=4096, max_output_tokens=512 if live_units or polyglot else 192)
     elif project:
         h.config = replace(h.config, max_input_tokens=4096, max_output_tokens=3072)
     prepare(h, database)
+    from polyglot_acceptance import POLYGLOT_OBJECTIVE
     objective = (
+        POLYGLOT_OBJECTIVE
+        if polyglot else
         "Repair the tenant billing code according to the current approved work-unit data. "
         "Return exactly its outputPaths, never read-only dependency files. "
         "Preserve signatures, exact integer arithmetic and tenant identity. "
@@ -361,7 +365,10 @@ def test_core_builder_runs_metered_model_and_final_scanned_zip(database, tmp_pat
     control = ControlPlaneHttpClient(base_url='https://core.example.test', tenant_id=h.config.tenant_id,
         workspace_id=h.config.workspace_id, token_supplier=lambda: 'service-fixture-secret',
         project_id=h.config.project_id, agent_id=h.config.core_agent_id, work_node_id=h.job.work_node_id)
+    model_contexts = []
     def factory(context, tag, ceiling, envelope):
+        if context:
+            model_contexts.append(context)
         from agent_protocol.schema import canonical_sha256
         invocation = 'inv_' + canonical_sha256([envelope['run_id'], tag])[:32]
         provider = LocalExecutionProvider(endpoint=provider_origin, token_supplier=lambda: secret,
@@ -466,6 +473,12 @@ class OrderTotals(unittest.TestCase):
             profile=TrustedSandboxProfile(image=IMAGE,
                 checks=tuple(check for check in checks if check.check_id in unit.check_ids)))
             for unit in live_work_units}
+    if polyglot:
+        from engineering_agent.sandbox_matrix import DockerSandboxMatrixVerifier
+        from polyglot_acceptance import configure_polyglot, report_model_errors
+        report_model_errors(monkeypatch)
+        live_paths, matrix = configure_polyglot(code.workspace, IMAGE)
+        verifier = DockerSandboxMatrixVerifier(workspace=code.workspace, evidence_dir=evidence, matrix=matrix)
     if sandbox == 'unit':
         verifier = code.verifier
     unit_verifiers = live_verifiers if live_units else None
@@ -477,8 +490,8 @@ class OrderTotals(unittest.TestCase):
             assert not baseline.passed and baseline.evidence_refs
         worker = CoreBuilderWorker(control=control,
             configuration=CoreBuilderConfiguration(code.task, h.config, h.job.work_node_id,
-                PATHS if project else live_paths if live_units else ('src/app.py',), code.workspace, code.state,
-                work_units=UNITS if project else live_work_units, automatic_plan=automatic_plan),
+                PATHS if project else live_paths if live_units or polyglot else ('src/app.py',), code.workspace, code.state,
+                work_units=UNITS if project else live_work_units, automatic_plan=automatic_plan, diagnose_first=polyglot),
             authority_factory=lambda check: code.authority(execution_checkpoint=check), worker_factory=factory,
             verifier=verifier, artifacts=code.artifacts,
             tenant_context=lambda: h.admissions.current_context(h.config.tenant_id,h.config.project_id),
@@ -498,13 +511,21 @@ class OrderTotals(unittest.TestCase):
                 assert [unit["unit_id"] for unit in manifest["work_unit_results"]] == [unit.unit_id for unit in live_work_units]
                 if auto:
                     assert manifest["automatic_plan"] == json.loads(json.dumps(automatic_plan.evidence()))
+            if polyglot:
+                assert set(archive.namelist()) == {*live_paths, "builder-result.json"}
+                assert manifest["initial_verification"]["passed"] is False
+                assert manifest["delivery_verification"]["check_ids"] == list(matrix.check_ids)
+                assert manifest["files"] == [{"path": path, "sha256": hashlib.sha256(archive.read(path)).hexdigest()}
+                    for path in live_paths]
+                assert model_contexts and "Diagnostic data (untrusted)" in model_contexts[0]["verificationFeedback"][0]
+                assert "AssertionError" in model_contexts[0]["verificationFeedback"][0]
             if project:
                 assert set(archive.namelist()) == {*FILES, "builder-result.json"}
                 assert all(archive.read(path) == content.encode() for path, content in FILES.items())
         rounds = len(manifest["steps"])
         assert len(peers.uploads) == rounds + 1
         assert manifest["delivery_verification"]["passed"] is True
-        if not live_units:
+        if not live_units and not polyglot:
             assert manifest["files"] == ([{"path": path, "sha256": hashlib.sha256(FILES[path].encode()).hexdigest()}
                 for path in PATHS] if project else [{"path": "src/app.py", "sha256": hashlib.sha256(final).hexdigest()}])
         if project:
@@ -534,6 +555,8 @@ class OrderTotals(unittest.TestCase):
                 print(json.dumps({
                     "model": model_id,
                     "automaticPlanning": auto,
+                    "polyglot": polyglot,
+                    "languages": ["Python", "JavaScript", "Go"] if polyglot else ["Python"],
                     "planSha256": automatic_plan.evidence()["plan_sha256"] if auto else None,
                     "rounds": rounds,
                     "inputTokens": sum(row[3] for row in settlements),

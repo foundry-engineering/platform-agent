@@ -126,6 +126,7 @@ class TenantBuilderRuntime:
         work_units: tuple[BuilderWorkUnit, ...] = (),
         unit_verifiers: Mapping[str, IndependentVerifier] | None = None,
         automatic_plan: AutomaticWorkPlan | None = None,
+        diagnose_first: bool = False,
     ) -> None:
         if not workspace.is_absolute() or workspace.is_symlink() or not workspace.is_dir():
             raise BuilderBoundaryError("absolute real Builder workspace required")
@@ -142,6 +143,9 @@ class TenantBuilderRuntime:
                     or set(automatic_plan.specification.source_paths) != set(source_paths)):
                 raise BuilderBoundaryError("automatic plan differs from runtime configuration")
             automatic_plan.require_current(authority, root)
+        if type(diagnose_first) is not bool:
+            raise BuilderBoundaryError("diagnosis selection must be a trusted boolean")
+        self._diagnose_first = diagnose_first
         self._automatic_plan = automatic_plan
         self._units, self._runner = work_units, runner
         self._unit_verifiers = dict(unit_verifiers or {})
@@ -167,7 +171,8 @@ class TenantBuilderRuntime:
         if not self._units:
             return run_builder(task, workspace=self._workspace,
                 planner=_LivePlanner(self._runner, ScopedSourceContext(self._workspace, self._source_paths),
-                    authority, self._source_paths), authority=authority, verifier=self._verifier)
+                    authority, self._source_paths), authority=authority, verifier=self._verifier,
+                diagnose_first=self._diagnose_first)
         completed: set[str] = set()
         steps: list[BuilderStep] = []
         spent = 0
@@ -182,12 +187,15 @@ class TenantBuilderRuntime:
             result = run_builder(task, workspace=self._workspace,
                 planner=WorkUnitPlanner(planner, unit), authority=authority,
                 verifier=_OffsetVerifier(_LiveVerifier(self._unit_verifiers[unit.unit_id], authority), offset),
-                round_limit=unit.max_rounds, budget_limit_microusd=task.model_budget_microusd - spent)
+                round_limit=unit.max_rounds, budget_limit_microusd=task.model_budget_microusd - spent,
+                diagnose_first=self._diagnose_first)
             spent += result.used_model_microusd
             steps.extend(replace(step, round_number=step.round_number + offset) for step in result.steps)
             self._unit_results.append({"unit_id": unit.unit_id, "status": result.status,
                 "actual_model_microusd": result.used_model_microusd,
                 "rounds": [step.round_number + offset for step in result.steps]})
+            if result.initial_verification is not None:
+                self._unit_results[-1]["initial_verification"] = asdict(result.initial_verification)
             if result.status != "verified":
                 return BuilderResult(result.status, tuple(steps), spent)
             completed.add(unit.unit_id)
@@ -209,6 +217,8 @@ class TenantBuilderRuntime:
             "steps": [asdict(step) for step in result.steps], "delivery_verification": asdict(seal),
             "files": [{"path": item.path, "sha256": item.sha256} for item in source],
         }
+        if result.initial_verification is not None:
+            manifest["initial_verification"] = asdict(result.initial_verification)
         if self._units:
             manifest["schema_version"] = "foundry.builder-delivery.v2"
             manifest["work_units"] = unit_definitions(self._units)
@@ -246,7 +256,8 @@ class TenantBuilderRuntime:
                 "task_sha256": hashlib.sha256(_json(asdict(task))).hexdigest(),
                 "configuration_sha256": hashlib.sha256(_json({"source_paths": self._source_paths,
                     "work_units": unit_definitions(self._units),
-                    "automatic_plan": self._automatic_plan.evidence() if self._automatic_plan else None})).hexdigest(),
+                    "automatic_plan": self._automatic_plan.evidence() if self._automatic_plan else None,
+                    "diagnose_first": self._diagnose_first})).hexdigest(),
             })
         except FileExistsError:
             raise BuilderBoundaryError("Builder grant already attempted; explicit recovery required") from None

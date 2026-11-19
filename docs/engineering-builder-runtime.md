@@ -294,3 +294,61 @@ paid gates and signed DOP execution, executes fixed Docker checks and seals one
 v3 ZIP. This verifies the automatic existing-source repair path; it does not
 prove autonomous discovery of an arbitrary repository, creation of arbitrary
 new architectures, or permanent production hosting.
+
+## Polyglot projects and diagnosis before model dispatch
+
+The `sandbox` field in any existing v1/v2/v3 private profile may instead hold:
+
+```json
+{
+  "schemaVersion": "foundry.builder-sandbox-matrix.v1",
+  "diagnoseFirst": true,
+  "profiles": [
+    {
+      "image": "docker.io/library/python@sha256:1b668429b3511ab407d8e00648891631b0b1a4d7e15e3ca70f38ab5b91ad4ab4",
+      "diagnostic_bytes": 1200,
+      "checks": [{"check_id": "python-check", "argv": ["/usr/local/bin/python", "-B", "-m", "unittest", "discover", "-s", "/workspace/tests"]}]
+    }
+  ]
+}
+```
+
+Each additional compiler profile is an explicit operator-reviewed digest-pinned
+image plus fixed checks. The model never selects either. Compiled binaries in
+Go/Rust/C/C++ require explicit `compiled_execution: true`; this enables execute
+only on the bounded temporary tmpfs, with the source bind/root filesystem still
+read-only, no network or host credentials, dropped capabilities and existing
+process/memory/CPU limits. Default profiles keep temporary files non-executable.
+
+A matrix permits up to six profiles and 12 globally unique checks with at most
+600 seconds total configured worst-case verification time. Work-unit check IDs
+select only a subset of the original profiles/checks; the final full matrix
+independently seals all configured file bytes. Legacy single-image profiles
+retain their semantics.
+
+With `diagnoseFirst`, the fixed checks run before the first model request. Their
+bounded optional diagnostics are untrusted task data inside the signed/metered
+request, never tools or authority. Baseline evidence uses disjoint round IDs and
+is retained in the sealed manifest (or individual work-unit results). Tool
+failure or output/deadline limits stop execution before inference. Initial
+diagnosis consumes no model call or added reservation.
+
+Source snapshots now admit explicitly approved UTF-8 code independent of suffix,
+including Go/Rust/Java/C#/C/C++ and other languages. Unobserved source siblings,
+hidden files, traversal, binary-NUL output and stale overwrites are rejected.
+Common ecosystem manifests are enumerated by Engineering's source-context
+policy; every path still needs the existing signed read/write grant. Automatic
+import planning currently covers Python/JS/TS; other languages use explicit v2
+work units or a bounded v1 source manifest.
+
+Native `live_polyglot` acceptance uses actual managed Qwen inference with initial
+Python test diagnostics and three bounded outputs: Python, JavaScript and Go
+quantity-weighted totals. Fixed independent Python/Node/Go checks cover empty,
+zero-quantity, negative-line and large exact integer cases. Every actual
+inference is settled in PostgreSQL; the final ZIP contains all exact verified
+sources and baseline/final evidence. Model responses have no fixture fallback;
+Core/storage counterparts remain isolated fixtures and the actual Core HTTPS
+contract is checked separately. The broader Engineering nine-check compiler
+matrix uses controlled source fixtures; its TypeScript case executes stripped
+types and does not replace `tsc --noEmit`. Neither set of bounded cases certifies
+market leadership, all language/framework combinations or production operation.
