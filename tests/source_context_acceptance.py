@@ -11,6 +11,8 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from engineering_agent.model_profiles import ModelProfile, load_model_profile
+from engineering_agent.functional_oracle import FunctionalOracleCommand
+from engineering_agent.sandbox_verifier import DockerSandboxVerifier, TrustedCheck, TrustedSandboxProfile
 
 OBJECTIVE = (
     "Implement repair_summary(outcomes: list[str]) -> dict[str, int] in src/app.py. "
@@ -75,6 +77,38 @@ class RepairSummary(unittest.TestCase):
                 repair_summary(["verified", value])
 ''')
     return content
+
+
+def context_verifier(workspace: Path, evidence: Path, image: str) -> DockerSandboxVerifier:
+    inputs: list[list[Any]] = [
+        [["verified", "blocked", "needs_revision", "verified"]],
+        [["blocked", "blocked"]], [["needs_revision"]], [[]], [["verified"] * 9],
+        [["blocked", "verified", "blocked", "needs_revision", "needs_revision"]],
+    ]
+    expected = [
+        {"passed": 2, "failed": 2, "blocked": 1},
+        {"passed": 0, "failed": 2, "blocked": 2},
+        {"passed": 0, "failed": 1, "blocked": 0},
+        {"passed": 0, "failed": 0, "blocked": 0},
+        {"passed": 9, "failed": 0, "blocked": 0},
+        {"passed": 1, "failed": 4, "blocked": 2},
+    ]
+    (workspace / "tests/context_inputs.json").write_text(json.dumps(inputs))
+    (workspace / "tests/context_probe.py").write_text(
+        "import json,sys\nsys.path.insert(0,'/workspace/src')\n"
+        "from app import repair_summary\n"
+        "with open('/workspace/tests/context_inputs.json') as stream: inputs=json.load(stream)\n"
+        "print(json.dumps([repair_summary(*args) for args in inputs],allow_nan=False,separators=(',',':')))\n"
+    )
+    oracle = FunctionalOracleCommand(expected, public_inputs=inputs)
+    checks = (
+        TrustedCheck("reference-results", ("/usr/local/bin/python", "-B", "/workspace/tests/context_probe.py")),
+        TrustedCheck("python-unittest", ("/usr/local/bin/python", "-B", "-m", "unittest",
+            "discover", "-s", "/workspace/tests")),
+    )
+    return DockerSandboxVerifier(workspace=workspace, evidence_dir=evidence,
+        profile=TrustedSandboxProfile(image=image, checks=checks, diagnostic_bytes=384),
+        check_commands={"reference-results": oracle})
 
 
 def reject_excess_tokens(origin: str, secret: str, journal: Path) -> None:

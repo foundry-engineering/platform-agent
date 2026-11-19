@@ -552,12 +552,13 @@ class OrderTotals(unittest.TestCase):
             for unit in live_work_units}
     if larger_context:
         from platform_agent.builder_work_units import BuilderWorkUnit
-        from source_context_acceptance import configure
+        from source_context_acceptance import configure, context_verifier
         reference_bytes = configure(code.workspace)
+        verifier = context_verifier(code.workspace, evidence, IMAGE)
         original = source.read_bytes()
         live_paths = ("src/app.py", "src/reference.py")
         live_work_units = (BuilderWorkUnit("reference-adapter", objective, live_paths,
-            ("src/app.py",), (), code.task.max_rounds, ("python-unittest",)),)
+            ("src/app.py",), (), code.task.max_rounds, ("reference-results", "python-unittest")),)
         live_verifiers = {"reference-adapter": verifier}
     if polyglot:
         from engineering_agent.sandbox_matrix import DockerSandboxMatrixVerifier
@@ -682,6 +683,9 @@ class OrderTotals(unittest.TestCase):
                     "maximumInputTokensPerCall": 3072 if larger_context else None,
                     "maximumDiagnosticBytesPerCheck": 384 if larger_context else None,
                     "firstAttemptPassed": manifest["steps"][0]["verification"]["passed"] if larger_context else None,
+                    "verificationCheckIds": manifest["delivery_verification"]["check_ids"] if larger_context else None,
+                    "publicCounterexampleFeedbackUsed": any("Public counterexample:" in feedback
+                        for context in model_contexts for feedback in context["verificationFeedback"]) if larger_context else None,
                     "referenceSha256": hashlib.sha256(reference_bytes).hexdigest() if larger_context else None,
                     "languages": ["Python", "JavaScript", "Go"] if polyglot else ["Python"],
                     "planSha256": automatic_plan.evidence()["plan_sha256"] if auto else None,
