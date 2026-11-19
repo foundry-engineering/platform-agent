@@ -490,7 +490,8 @@ class OrderTotals(unittest.TestCase):
     evidence.mkdir(mode=0o700)
     verifier = DockerSandboxVerifier(workspace=code.workspace, evidence_dir=evidence,
         profile=TrustedSandboxProfile(image=IMAGE, checks=(TrustedCheck('python-unittest',
-            ('/usr/local/bin/python','-B','-m','unittest','discover','-s','/workspace/tests')),)))
+            ('/usr/local/bin/python','-B','-m','unittest','discover','-s','/workspace/tests')),),
+            diagnostic_bytes=384 if larger_context else 0))
     live_paths, live_work_units = (), ()
     if live_units:
         import http.client
@@ -677,6 +678,8 @@ class OrderTotals(unittest.TestCase):
                     "largerSourceContext": larger_context,
                     "referenceBytes": len(reference_bytes) if larger_context else None,
                     "maximumInputTokensPerCall": 3072 if larger_context else None,
+                    "maximumDiagnosticBytesPerCheck": 384 if larger_context else None,
+                    "firstAttemptPassed": manifest["steps"][0]["verification"]["passed"] if larger_context else None,
                     "referenceSha256": hashlib.sha256(reference_bytes).hexdigest() if larger_context else None,
                     "languages": ["Python", "JavaScript", "Go"] if polyglot else ["Python"],
                     "planSha256": automatic_plan.evidence()["plan_sha256"] if auto else None,

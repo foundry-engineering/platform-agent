@@ -119,4 +119,7 @@ def verify_context(workspace: Path, reference: bytes, contexts: list[dict[str, A
         entries = {entry["path"]: entry for entry in context["sourceContext"]}
         assert entries["src/reference.py"]["content"].encode() == reference
         assert entries["src/reference.py"]["sha256"] == hashlib.sha256(reference).hexdigest()
+    if len(contexts) > 1:
+        assert any("Diagnostic data (untrusted)" in feedback
+            for context in contexts[1:] for feedback in context["verificationFeedback"])
     assert manifest["delivery_verification"]["passed"] is True
