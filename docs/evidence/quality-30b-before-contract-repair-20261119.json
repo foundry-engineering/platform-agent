@@ -1,0 +1,344 @@
+{
+  "schemaVersion": "foundry.quality-evaluation-checkpoint.v1",
+  "runUrl": "https://github.com/foundry-engineering/platform-agent/actions/runs/44525628629",
+  "platformCommit": "f54e5253abcab022de8418ce59742362115e1b8f",
+  "engineeringCommit": "08bbb83cf8bc717bae97075c4d066e0349c00400",
+  "report": {
+    "actualMicrousd": 678,
+    "complete": true,
+    "evaluation": "public first-attempt smoke subset; not a market benchmark",
+    "expected": 9,
+    "failed": 0,
+    "inputTokens": 4407,
+    "marketRankClaim": false,
+    "notRun": 0,
+    "outputTokens": 2257,
+    "passed": 9,
+    "receipts": [
+      {
+        "actual_microusd": 76,
+        "case_id": "multiple-go-0",
+        "evidence_refs": [
+          "sha256:8c5d031281cd6721a10ba27f8394c409bc6e03701aa2f6a1ec962244af5c8b23"
+        ],
+        "input_tokens": 491,
+        "invocations": 1,
+        "language": "go",
+        "model_id": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
+        "oracle_sha256": "cd72434cfc52dbba28328f931990cef7692a1a2f16dce4836c267ed5e4b386b9",
+        "outcome": "verified",
+        "output_tokens": 259,
+        "profile_sha256": "7db700fe0cc930648efa1a63a552f7d2c904e1e5adb10fedd7f1bd440b09fca7",
+        "runtime_sha256": "c1d7e7f31b5c43f3e5d44f667b4d57104217be3e5f2060320cd3735651238849",
+        "source_sha256": "8f296e5bff1a6f5672ca58c7905e217b622118d69cb0a79fb363dc40ab558ee4"
+      },
+      {
+        "actual_microusd": 94,
+        "case_id": "multiple-go-10",
+        "evidence_refs": [
+          "sha256:c34fd40d454c9a9ce9f5ada7a30e803126e6386664746a3d6241d8fe199c5557"
+        ],
+        "input_tokens": 492,
+        "invocations": 1,
+        "language": "go",
+        "model_id": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
+        "oracle_sha256": "1fb46fa9bc49de1976c4cd7b50073593204bafc7f363f256c34b3844738981f2",
+        "outcome": "verified",
+        "output_tokens": 432,
+        "profile_sha256": "7db700fe0cc930648efa1a63a552f7d2c904e1e5adb10fedd7f1bd440b09fca7",
+        "runtime_sha256": "c1d7e7f31b5c43f3e5d44f667b4d57104217be3e5f2060320cd3735651238849",
+        "source_sha256": "950cc08cb8dc8a10e05ff1c38dd3f664761277cc2903de54c1f78908821f8dfd"
+      },
+      {
+        "actual_microusd": 72,
+        "case_id": "multiple-go-30",
+        "evidence_refs": [
+          "sha256:2804c9bdee793671fa512425e1f8838fa74d9e6cb7a6f4268a6a6c67a8fffabe"
+        ],
+        "input_tokens": 498,
+        "invocations": 1,
+        "language": "go",
+        "model_id": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
+        "oracle_sha256": "927493c4c3e0b636089fee12ee96aea9aa118eaf8f12043c9fb5e72c48ca26e2",
+        "outcome": "verified",
+        "output_tokens": 212,
+        "profile_sha256": "7db700fe0cc930648efa1a63a552f7d2c904e1e5adb10fedd7f1bd440b09fca7",
+        "runtime_sha256": "c1d7e7f31b5c43f3e5d44f667b4d57104217be3e5f2060320cd3735651238849",
+        "source_sha256": "2d683475ba52f9d387d82a879dc81735587ba21b19baa0df34fd5d316a4925c9"
+      },
+      {
+        "actual_microusd": 70,
+        "case_id": "multiple-js-0",
+        "evidence_refs": [
+          "sha256:d77147e12b81dfe2238f8c023e534069d7fee0c100fc5598deb568a08f1c42d2"
+        ],
+        "input_tokens": 474,
+        "invocations": 1,
+        "language": "js",
+        "model_id": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
+        "oracle_sha256": "133a05006fcf84b1ea597a4824b68e5f976046fa2bc68905b568aaa8467c8f70",
+        "outcome": "verified",
+        "output_tokens": 212,
+        "profile_sha256": "7db700fe0cc930648efa1a63a552f7d2c904e1e5adb10fedd7f1bd440b09fca7",
+        "runtime_sha256": "c1d7e7f31b5c43f3e5d44f667b4d57104217be3e5f2060320cd3735651238849",
+        "source_sha256": "d42228fa55feea659ef2eae3232cbb8355830fa2e697cf66d85621ed3fe1c972"
+      },
+      {
+        "actual_microusd": 82,
+        "case_id": "multiple-js-10",
+        "evidence_refs": [
+          "sha256:3fa5fbedba1bc1360b83282c6e620867dd12307188c37a1b18250151b9873e2b"
+        ],
+        "input_tokens": 481,
+        "invocations": 1,
+        "language": "js",
+        "model_id": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
+        "oracle_sha256": "53a85ad7f21370806e53ffab936277a87a5a70db99f436749ed16543c7e4b5b0",
+        "outcome": "verified",
+        "output_tokens": 323,
+        "profile_sha256": "7db700fe0cc930648efa1a63a552f7d2c904e1e5adb10fedd7f1bd440b09fca7",
+        "runtime_sha256": "c1d7e7f31b5c43f3e5d44f667b4d57104217be3e5f2060320cd3735651238849",
+        "source_sha256": "c2841fc6682999c9afa93b99d3f810d17c1b985806b3a77db585603656b6b461"
+      },
+      {
+        "actual_microusd": 65,
+        "case_id": "multiple-js-30",
+        "evidence_refs": [
+          "sha256:052d55b7f74d3485182370736671e43f11838dba21907944f384adc1e9e086dd"
+        ],
+        "input_tokens": 484,
+        "invocations": 1,
+        "language": "js",
+        "model_id": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
+        "oracle_sha256": "6bcbf0c4004a019afaa72fccfd2ff3b8fba82f0484bb982e254c966ed7e3a094",
+        "outcome": "verified",
+        "output_tokens": 159,
+        "profile_sha256": "7db700fe0cc930648efa1a63a552f7d2c904e1e5adb10fedd7f1bd440b09fca7",
+        "runtime_sha256": "c1d7e7f31b5c43f3e5d44f667b4d57104217be3e5f2060320cd3735651238849",
+        "source_sha256": "1fe05d29412052ca6869f8053e3e54d0286bb2cfa748816a33f687257eb32f37"
+      },
+      {
+        "actual_microusd": 71,
+        "case_id": "multiple-py-0",
+        "evidence_refs": [
+          "sha256:f56d83d7dd6612017882fa1883b3035c5a9e4bda7137db2afdc71ad09efa3bf5"
+        ],
+        "input_tokens": 492,
+        "invocations": 1,
+        "language": "py",
+        "model_id": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
+        "oracle_sha256": "133a05006fcf84b1ea597a4824b68e5f976046fa2bc68905b568aaa8467c8f70",
+        "outcome": "verified",
+        "output_tokens": 206,
+        "profile_sha256": "7db700fe0cc930648efa1a63a552f7d2c904e1e5adb10fedd7f1bd440b09fca7",
+        "runtime_sha256": "c1d7e7f31b5c43f3e5d44f667b4d57104217be3e5f2060320cd3735651238849",
+        "source_sha256": "fadd9db3f7ac06c933c7997bd013cfa0c342b20239dc81021745cd04c0455b4c"
+      },
+      {
+        "actual_microusd": 78,
+        "case_id": "multiple-py-10",
+        "evidence_refs": [
+          "sha256:08560d935849dda2e98d6a2f330642397dccc8f4b329a560786b6b8362e88906"
+        ],
+        "input_tokens": 494,
+        "invocations": 1,
+        "language": "py",
+        "model_id": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
+        "oracle_sha256": "53a85ad7f21370806e53ffab936277a87a5a70db99f436749ed16543c7e4b5b0",
+        "outcome": "verified",
+        "output_tokens": 272,
+        "profile_sha256": "7db700fe0cc930648efa1a63a552f7d2c904e1e5adb10fedd7f1bd440b09fca7",
+        "runtime_sha256": "c1d7e7f31b5c43f3e5d44f667b4d57104217be3e5f2060320cd3735651238849",
+        "source_sha256": "1c860d52dafae3f108b5cc78213ba6846e9ad8825c779254be91157538c5dad3"
+      },
+      {
+        "actual_microusd": 70,
+        "case_id": "multiple-py-30",
+        "evidence_refs": [
+          "sha256:21961a9dff873c337ab430ff046e49cc9bab7e86ec282b3d4f2a993f2c9cdc69"
+        ],
+        "input_tokens": 501,
+        "invocations": 1,
+        "language": "py",
+        "model_id": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
+        "oracle_sha256": "6bcbf0c4004a019afaa72fccfd2ff3b8fba82f0484bb982e254c966ed7e3a094",
+        "outcome": "verified",
+        "output_tokens": 182,
+        "profile_sha256": "7db700fe0cc930648efa1a63a552f7d2c904e1e5adb10fedd7f1bd440b09fca7",
+        "runtime_sha256": "c1d7e7f31b5c43f3e5d44f667b4d57104217be3e5f2060320cd3735651238849",
+        "source_sha256": "79e6feeb1c6e4c609adab405e1c9409d5991847868cd65e2c66ff33dbb16ead4"
+      }
+    ],
+    "regressionGatePassed": true,
+    "releaseApproved": false,
+    "repairEvaluation": {
+      "actualMicrousd": 627,
+      "blocked": 2,
+      "complete": true,
+      "evaluation": "repair of recorded public baseline failures; not first-attempt quality",
+      "expected": 4,
+      "failed": 2,
+      "inputTokens": 4839,
+      "invocations": 8,
+      "marketRankClaim": false,
+      "maximumNewCallsPerCase": 3,
+      "notRun": 0,
+      "outputTokens": 1370,
+      "passed": 2,
+      "receipts": [
+        {
+          "actual_microusd": 90,
+          "case_id": "multiple-go-0",
+          "evidence_refs": [
+            "sha256:4df2d2838db4a841f4f4a15f4a092e200834ed85d7fbf22a1d27a3d381e8ae01",
+            "sha256:54044b3cfbf3d1b108560f28b2bc9979fdd4a983dbe912b191a65aa5bb95b4b9",
+            "sha256:b4fc0228ab3d251703726a0517a0cd15d26ed3a25ccfd62987055ed14a959037"
+          ],
+          "final_source_sha256": "ad4f7e0d80496f5aa84b38aded3e8a43de21de9949ed0db0a0ac0196df0678f9",
+          "initial_source_sha256": "acf8c10daaeaea2efec20963f30f62672d5a9426818a2d7b308bd645395846b9",
+          "input_tokens": 659,
+          "invocations": 1,
+          "language": "go",
+          "model_id": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
+          "model_usage_evidence_refs": [
+            "model:sha256:0e9f08edc5607e06a25976323a0a7478a8fa6681e741950e30b3dd2060b71e8e"
+          ],
+          "oracle_sha256": "4587cdcd7c2e2c8ef7b9298261ed2e3cb8c1fc96ec035cbef569b14b9db89fb3",
+          "outcome": "verified",
+          "output_tokens": 231,
+          "profile_sha256": "7db700fe0cc930648efa1a63a552f7d2c904e1e5adb10fedd7f1bd440b09fca7",
+          "round_microusd": [
+            90
+          ],
+          "round_passed": [
+            true
+          ],
+          "runtime_sha256": "c1d7e7f31b5c43f3e5d44f667b4d57104217be3e5f2060320cd3735651238849",
+          "settlement_invocation_ids": [
+            "inv_19985e2868128bcfc2b66500041db89f"
+          ]
+        },
+        {
+          "actual_microusd": 182,
+          "case_id": "multiple-go-10",
+          "evidence_refs": [
+            "sha256:7b9468f735164d0379f52354a84859bc0eb8fefc731894871fc8a8970bbca50f",
+            "sha256:d9c4fa5f2584ac0bbca0e81918ef16403b38af0fbb9635b84363440e00e54122"
+          ],
+          "final_source_sha256": "c58e9e8e1e060579219c44b03d1d63f935ae90d8cdf9b8a51429ac96ec2acbf9",
+          "initial_source_sha256": "c58e9e8e1e060579219c44b03d1d63f935ae90d8cdf9b8a51429ac96ec2acbf9",
+          "input_tokens": 1336,
+          "invocations": 2,
+          "language": "go",
+          "model_id": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
+          "model_usage_evidence_refs": [
+            "model:sha256:05c7b45e6b4822d83bede9a512637f5c3feaee4511dff6f53cf231273395d569",
+            "model:sha256:05c7b45e6b4822d83bede9a512637f5c3feaee4511dff6f53cf231273395d569"
+          ],
+          "oracle_sha256": "067e9c2d679f5f0377194a577a4c948863fe7fef97270aacdf87b51ac5d7f29a",
+          "outcome": "blocked",
+          "output_tokens": 468,
+          "profile_sha256": "7db700fe0cc930648efa1a63a552f7d2c904e1e5adb10fedd7f1bd440b09fca7",
+          "round_microusd": [
+            89,
+            93
+          ],
+          "round_passed": [
+            false,
+            null
+          ],
+          "runtime_sha256": "c1d7e7f31b5c43f3e5d44f667b4d57104217be3e5f2060320cd3735651238849",
+          "settlement_invocation_ids": [
+            "inv_126f46bae034129a88c2e8c190d9c3d4",
+            "inv_316fe1cead1b6bd6187185bfe4a90eed"
+          ]
+        },
+        {
+          "actual_microusd": 226,
+          "case_id": "multiple-js-10",
+          "evidence_refs": [
+            "sha256:6e3a31b59b3b5ad4107d2d94bc45551c4e26ce43bf6c0a3aa1ef6ed88b388060",
+            "sha256:dfdfa34782db4fa6190140a02bfc2736b08b38d4ea164e72e2c20aea93f31e7b",
+            "sha256:f0576ba7a3ac8d22ebb8e4a343310baafa557c97aad09f5772314293c8c68c6d"
+          ],
+          "final_source_sha256": "f269875e11bb27d3400d60a96f32c56c639ac701b6bcfd8cc98ab1d80b91592b",
+          "initial_source_sha256": "4b9d9b2aee6487cb4408691c85ece74c50557561e00333c0b2cc866114809be4",
+          "input_tokens": 1770,
+          "invocations": 3,
+          "language": "js",
+          "model_id": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
+          "model_usage_evidence_refs": [
+            "model:sha256:f8b12f4f5cb0e53a957f4b7c74c00fce7c0b7a3115f3029afd12da7c40c7891b",
+            "model:sha256:8eff7bb852db9b2b27b4cc99812f35c9b2b8f14bdadfd3145ad832c527de58e5",
+            "model:sha256:8eff7bb852db9b2b27b4cc99812f35c9b2b8f14bdadfd3145ad832c527de58e5"
+          ],
+          "oracle_sha256": "d942e7f7fd8d5ecc33ae30b5faee849b64e6747dedf52e81dd015aaa8f3df5e5",
+          "outcome": "blocked",
+          "output_tokens": 474,
+          "profile_sha256": "7db700fe0cc930648efa1a63a552f7d2c904e1e5adb10fedd7f1bd440b09fca7",
+          "round_microusd": [
+            68,
+            77,
+            81
+          ],
+          "round_passed": [
+            false,
+            false,
+            null
+          ],
+          "runtime_sha256": "c1d7e7f31b5c43f3e5d44f667b4d57104217be3e5f2060320cd3735651238849",
+          "settlement_invocation_ids": [
+            "inv_465474fcb73f80641fb7d2f0bc9cd1c9",
+            "inv_6c14b1970a36244b0cca8102fa67d968",
+            "inv_fca922a82dd830132c53848001a8ac24"
+          ]
+        },
+        {
+          "actual_microusd": 129,
+          "case_id": "multiple-py-10",
+          "evidence_refs": [
+            "sha256:160ebf88b206ca0cbfc3a138e36f75425384b9018e36950ddf80f0d301b5b6f0",
+            "sha256:873b414832e8ec789a1a9ada9fb3dfc68f9bd8c65d3afa5710a7de096f4e454c",
+            "sha256:aebea19b08155a2f617ce1d1c6ffa5c74350130ec7cff74221f8d974da507636",
+            "sha256:f08188554425b003faee924f8e3d2caceab5452e871ad147fa8abf889b720e0c"
+          ],
+          "final_source_sha256": "9144d9e43b9855bfcf867dcfa1453d7162f869780245ba0604dba76491bda3ac",
+          "initial_source_sha256": "4ee4aaa14112c5d6d634d2a058c09ba2351e9fab39a985b9a3686acf08e13c69",
+          "input_tokens": 1074,
+          "invocations": 2,
+          "language": "py",
+          "model_id": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
+          "model_usage_evidence_refs": [
+            "model:sha256:07c1fae8a827a67e851e9339e1ef6532815cc356daa328debb5a64f5ba3410c7",
+            "model:sha256:78f8b15808203d5a6fb92c2bb41285bad08c0d49a8b7a5c39c62cc5f70e6d058"
+          ],
+          "oracle_sha256": "d942e7f7fd8d5ecc33ae30b5faee849b64e6747dedf52e81dd015aaa8f3df5e5",
+          "outcome": "verified",
+          "output_tokens": 197,
+          "profile_sha256": "7db700fe0cc930648efa1a63a552f7d2c904e1e5adb10fedd7f1bd440b09fca7",
+          "round_microusd": [
+            63,
+            66
+          ],
+          "round_passed": [
+            false,
+            true
+          ],
+          "runtime_sha256": "c1d7e7f31b5c43f3e5d44f667b4d57104217be3e5f2060320cd3735651238849",
+          "settlement_invocation_ids": [
+            "inv_30e5b22ba026b0b54cadec75b37f0cdb",
+            "inv_b640c40f8550307750ba09b467bf470c"
+          ]
+        }
+      ],
+      "regressionGatePassed": false,
+      "releaseApproved": false,
+      "schemaVersion": "foundry.recorded-failure-repair-report.v1",
+      "seedsSha256": "7a3978d470242feee4bfdac4e647b839752b9e07d36d9c0c625131bfa644bc90",
+      "trainingUse": "forbidden"
+    },
+    "schemaVersion": "foundry.public-quality-report.v1",
+    "suiteSha256": "c9d19b6d0542872477639cc34adc3102d486b7eb1300edabb08bbbba9661d085",
+    "trainingUse": "forbidden"
+  }
+}

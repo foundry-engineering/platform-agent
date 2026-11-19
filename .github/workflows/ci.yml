@@ -147,7 +147,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: foundry-engineering/foundry-core
-          ref: 09396ed9f42989b4293be218b073328f95f24973
+          ref: 9818da74b0ed0017fca1a9effc4c8ade0b8a56de
           token: ${{ secrets.FOUNDRY_CI_READ_TOKEN }}
           path: .integration/core
           persist-credentials: false

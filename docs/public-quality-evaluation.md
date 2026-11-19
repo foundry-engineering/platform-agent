@@ -141,3 +141,22 @@ claims. It has to pass the same unchanged real functional and repair gates.
 Preflight refuses insufficient RAM, disk or platform before downloading. No
 new paid host is provisioned and the legacy 7B diagnostics remain separate.
 Larger production quantizations still need their own capacity and qualification.
+
+### Frozen 30B result before contract-driven repair
+
+Run [44525628629](https://github.com/foundry-engineering/platform-agent/actions/runs/44525628629)
+at Platform `f54e5253abcab022de8418ce59742362115e1b8f` and Engineering
+`08bbb83cf8bc717bae97075c4d066e0349c00400` passed nine of nine fresh tasks,
+then two of four recorded-error repairs. JavaScript and Go repeated an incorrect
+algorithm despite a public counterexample. All eight repair model calls and
+627 internal micro-USD were settled, including the two terminal duplicate
+proposals. The unchanged required repair gate rejected this run. Full counts,
+identities and evidence commitments are preserved alongside this document.
+
+The next qualified attempt pins protected Engineering
+`7f81fe677ba3ef81192f008aa599b9681500348d`. Its generic failed-check instruction
+asks the generator to derive from requirements again and trace reported
+inputs/results, preserving interfaces rather than a broken algorithm. Inputs,
+private expected answers, recorded seeds, model weights, public task selection,
+three-call limit, total approved budget and duplicate blocking remain unchanged.
+This informed regression iteration is not an unbiased comparative benchmark.
