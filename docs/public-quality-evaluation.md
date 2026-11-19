@@ -121,3 +121,23 @@ full report if a repair remains blocked, incorrect, missing or incomplete. Hones
 accounting of a failure does not turn it into a successful agent result. This
 repair gate remains separate from the non-gating raw first-attempt measurement
 and from overall product release approval.
+
+
+The 7B qualified run 44520191177 remained below the required repair gate: five
+of nine raw cases and one of four repairs passed. All nine new repair calls and
+703 internal micro-USD of usage were retained, including one duplicate blocked
+before mutation. The gate stayed red. No expected answer or solution was added
+to make those cases pass.
+
+A separate frozen candidate profile selects Qwen3-Coder-30B-A3B-Instruct,
+Unsloth UD-Q2_K_XL GGUF, revision
+`b17cb02dd882d5b6ab62fc777ad2995f19668350`, exact weight SHA-256
+`3dee4686d756e8842aec638c5725666c76584edce76d71088732b52d2c5d7a45`.
+The upstream model and quantization repository declare Apache-2.0. The 11,788,590,240
+weight bytes plus explicit runtime/context reserves require an approximately
+12.48 GiB software memory floor. This compressed candidate is chosen only to
+fit existing CI capacity; quality is not assumed from model size or vendor
+claims. It has to pass the same unchanged real functional and repair gates.
+Preflight refuses insufficient RAM, disk or platform before downloading. No
+new paid host is provisioned and the legacy 7B diagnostics remain separate.
+Larger production quantizations still need their own capacity and qualification.

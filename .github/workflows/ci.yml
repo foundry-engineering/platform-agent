@@ -87,6 +87,25 @@ jobs:
         run: |
           FOUNDRY_BUILDER_MODEL_ASSETS="$RUNNER_TEMP/foundry-coding-model" \
             uv run pytest -s -vv 'tests/test_postgres_artifact_worker.py::test_core_builder_runs_metered_model_and_final_scanned_zip[live_polyglot]' 'tests/test_postgres_artifact_worker.py::test_core_builder_runs_metered_model_and_final_scanned_zip[live]' 'tests/test_postgres_artifact_worker.py::test_core_builder_runs_metered_model_and_final_scanned_zip[live_units]' 'tests/test_postgres_artifact_worker.py::test_core_builder_runs_metered_model_and_final_scanned_zip[live_auto]'
+      - name: Provision the frozen 30B coding candidate inside existing CI capacity
+        if: github.event_name != 'push'
+        timeout-minutes: 10
+        run: |
+          install -m 0600 deploy/profiles/qwen3-coder-30b-a3b-q2-xl.json "$RUNNER_TEMP/foundry-coder30b-profile.json"
+          uv run python - <<'PYCODE'
+          import json, os, shutil
+          from pathlib import Path
+          from engineering_agent.model_profiles import load_model_profile, profile_readiness
+          from engineering_agent.model_host import RUNTIME
+          directory = Path(os.environ["RUNNER_TEMP"])
+          profile = load_model_profile(directory / "foundry-coder30b-profile.json")
+          readiness = profile_readiness(profile, directory / "foundry-coder30b-model", RUNTIME)
+          print(json.dumps(readiness, sort_keys=True))
+          assert readiness["memory_sufficient"] and readiness["platform_supported"], "existing CI capacity cannot host the approved coding candidate"
+          required_disk = sum(asset.size for asset in profile.weights) + RUNTIME.size + 1024**3
+          assert shutil.disk_usage(directory).free >= required_disk, "existing CI disk cannot hold the approved coding candidate"
+          PYCODE
+          uv run foundry-model-host fetch-assets "$RUNNER_TEMP/foundry-coder30b-model" --profile "$RUNNER_TEMP/foundry-coder30b-profile.json"
       - name: Fixed public tasks and bounded repairs of recorded model errors
         if: github.event_name != 'push'
         env:
@@ -96,7 +115,8 @@ jobs:
           FOUNDRY_PLATFORM_TEST_DATABASE_URL: postgres://platform_ci:platform_ci_test_only@127.0.0.1:5432/platform_authority_test
           FOUNDRY_RUNNER_SOURCE_ROOT: ${{ github.workspace }}/.integration/runner
         run: |
-          FOUNDRY_BUILDER_MODEL_ASSETS="$RUNNER_TEMP/foundry-coding-model" \
+          FOUNDRY_BUILDER_MODEL_ASSETS="$RUNNER_TEMP/foundry-coder30b-model" \
+          FOUNDRY_QUALITY_MODEL_PROFILE="$RUNNER_TEMP/foundry-coder30b-profile.json" \
           FOUNDRY_QUALITY_REPORT="$RUNNER_TEMP/foundry-public-quality.json" \
             uv run pytest -s -vv tests/test_postgres_artifact_worker.py -k multiple
       - name: Preserve actual public quality counts and immutable evidence
