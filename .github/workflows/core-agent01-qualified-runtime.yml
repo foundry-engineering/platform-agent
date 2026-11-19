@@ -22,12 +22,16 @@ jobs:
         image: postgres:16-alpine
         env: {POSTGRES_USER: foundry_ci, POSTGRES_PASSWORD: isolated_ci_only, POSTGRES_DB: foundry_agent01_test}
         ports: ['5432:5432']
-        options: --health-cmd 'pg_isready -U foundry_ci -d foundry_agent01_test' --health-interval 5s --health-timeout 3s --health-retries 15
+        options: >-
+          --health-cmd "pg_isready -U foundry_ci -d foundry_agent01_test"
+          --health-interval 5s --health-timeout 3s --health-retries 15
       postgres_restore:
         image: postgres:16-alpine
         env: {POSTGRES_USER: foundry_restore, POSTGRES_PASSWORD: isolated_restore_only, POSTGRES_DB: foundry_recovery_test}
         ports: ['15432:5432']
-        options: --health-cmd 'pg_isready -U foundry_restore -d foundry_recovery_test' --health-interval 5s --health-timeout 3s --health-retries 15
+        options: >-
+          --health-cmd "pg_isready -U foundry_restore -d foundry_recovery_test"
+          --health-interval 5s --health-timeout 3s --health-retries 15
     env:
       FOUNDRY_AGENT01_RESTORE_URL: postgres://foundry_restore:isolated_restore_only@127.0.0.1:15432/foundry_recovery_test
       DATABASE_URL: postgres://foundry_ci:isolated_ci_only@127.0.0.1:5432/foundry_agent01_test
