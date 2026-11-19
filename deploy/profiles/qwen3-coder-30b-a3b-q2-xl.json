@@ -1,0 +1,19 @@
+{
+  "schemaVersion": "foundry.model-profile.v1",
+  "contextTokens": 4096,
+  "maxInputTokens": 3072,
+  "maxOutputTokens": 512,
+  "runtimeReserveBytes": 1073741824,
+  "contextReserveBytes": 536870912,
+  "modelId": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
+  "sourceRepository": "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
+  "revision": "b17cb02dd882d5b6ab62fc777ad2995f19668350",
+  "weights": [
+    {
+      "name": "Qwen3-Coder-30B-A3B-Instruct-UD-Q2_K_XL.gguf",
+      "url": "https://huggingface.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF/resolve/b17cb02dd882d5b6ab62fc777ad2995f19668350/Qwen3-Coder-30B-A3B-Instruct-UD-Q2_K_XL.gguf",
+      "sha256": "3dee4686d756e8842aec638c5725666c76584edce76d71088732b52d2c5d7a45",
+      "size": 11788590240
+    }
+  ]
+}

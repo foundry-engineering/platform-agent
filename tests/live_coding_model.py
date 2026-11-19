@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import http.client
+import json
+from dataclasses import replace
 import secrets
 import socket
 import subprocess
@@ -11,7 +13,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from engineering_agent.model_host import MODEL_ID as MODEL_ID
+from engineering_agent.model_host import MODEL_ID as MODEL_ID, DEFAULT_PROFILE, RUNTIME
+from engineering_agent.model_profiles import ModelProfile
 
 
 def _port() -> int:
@@ -20,7 +23,7 @@ def _port() -> int:
         return int(listener.getsockname()[1])
 
 
-def _wait_ready(server: subprocess.Popen[bytes], port: int) -> None:
+def _wait_ready(server: subprocess.Popen[bytes], port: int, identity: dict[str, str]) -> None:
     deadline = time.monotonic() + 85
     while time.monotonic() < deadline:
         if server.poll() is not None:
@@ -30,6 +33,9 @@ def _wait_ready(server: subprocess.Popen[bytes], port: int) -> None:
             conn.request("GET", "/readyz")
             with conn.getresponse() as response:
                 if response.status == 200:
+                    body = json.loads(response.read(16385))
+                    if any(body.get(key) != value for key, value in identity.items()):
+                        raise RuntimeError("managed host identity differs from its approved model profile")
                     return
         except (OSError, http.client.HTTPException):
             pass
@@ -40,7 +46,8 @@ def _wait_ready(server: subprocess.Popen[bytes], port: int) -> None:
 
 
 @contextmanager
-def live_model(directory: Path, assets: Path, *, max_output_tokens: int = 192) -> Iterator[tuple[str, str]]:
+def live_model(directory: Path, assets: Path, *, max_output_tokens: int = 192,
+               approved_profile: ModelProfile = DEFAULT_PROFILE) -> Iterator[tuple[str, str]]:
     """Yield the managed Runner endpoint and its temporary test credential."""
     if type(max_output_tokens) is not int or not 128 <= max_output_tokens <= 512:
         raise ValueError("explicit bounded test-model output allowance required")
@@ -53,6 +60,10 @@ def live_model(directory: Path, assets: Path, *, max_output_tokens: int = 192) -
     secret = directory / "runner-token"
     secret.touch(mode=0o600, exist_ok=False)
     secret.write_text(token + "\n", encoding="ascii")
+    profile = replace(approved_profile, max_output_tokens=max_output_tokens)
+    profile_path = directory / "approved-model.json"
+    profile_path.touch(mode=0o600, exist_ok=False)
+    profile_path.write_text(json.dumps(profile.as_payload()), encoding="utf-8")
     port, engine_port = _port(), _port()
     while engine_port == port:
         engine_port = _port()
@@ -61,12 +72,12 @@ def live_model(directory: Path, assets: Path, *, max_output_tokens: int = 192) -
         "--assets", str(assets), "--state-dir", str(state), "--runtime-dir", str(runtime),
         "--runner-token-file", str(secret), "--policy-sha256", "a" * 64,
         "--input-tariff", "100000", "--output-tariff", "100000",
-        "--port", str(port), "--engine-port", str(engine_port), "--max-output-tokens", str(max_output_tokens),
+        "--port", str(port), "--engine-port", str(engine_port), "--profile", str(profile_path),
     ]
     try:
         with subprocess.Popen(argv, stdin=subprocess.DEVNULL) as server:
             try:
-                _wait_ready(server, port)
+                _wait_ready(server, port, {**profile.identity(), "runtime_sha256": RUNTIME.sha256})
                 yield f"http://127.0.0.1:{port}", token
             finally:
                 if server.poll() is None:

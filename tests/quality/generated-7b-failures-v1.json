@@ -1,0 +1,29 @@
+{
+  "schemaVersion": "foundry.recorded-model-failures.v1",
+  "workflowRun": 44480681955,
+  "platformHead": "e91915b4add3926927ca57dc4433a3e2d79dcf7c",
+  "engineeringMain": "bb5efb5584343ef27c658882995ad3ee8ad2db94",
+  "trainingUse": "forbidden",
+  "cases": [
+    {
+      "case_id": "multiple-go-0",
+      "source": "package main\n\n\n// Check if in given list of numbers, are any two numbers closer to each other than\n// given threshold.\n// >>> has_close_elements([]float64{1.0, 2.0, 3.0}, 0.5)\n// false\n// >>> has_close_elements([]float64{1.0, 2.8, 3.0, 4.0, 5.0, 2.0}, 0.3)\n// true\nfunc has_close_elements(numbers []float64, threshold float64) bool {\n    for i := 0; i < len(numbers); i++ {\n        for j := i + 1; j < len(numbers); j++ {\n            if math.Abs(numbers[i] - numbers[j]) < threshold {\n                return true\n            }\n        }\n    }\n    return false\n}\n",
+      "source_sha256": "acf8c10daaeaea2efec20963f30f62672d5a9426818a2d7b308bd645395846b9"
+    },
+    {
+      "case_id": "multiple-py-10",
+      "source": "def make_palindrome(string: str) -> str:\n    if string == string[::-1]:\n        return string\n    for i in range(len(string), -1, -1):\n        if string[:i] == string[:i][::-1]:\n            return string + string[i:][::-1]\n    return string",
+      "source_sha256": "4ee4aaa14112c5d6d634d2a058c09ba2351e9fab39a985b9a3686acf08e13c69"
+    },
+    {
+      "case_id": "multiple-js-10",
+      "source": "function make_palindrome(string){\n  let i = string.length;\n  while(i > 0 && string.substring(0, i) !== string.substring(0, i).split('').reverse().join('')){\n    i--;\n  }\n  return string + string.substring(i).split('').reverse().join('');\n}\n",
+      "source_sha256": "4b9d9b2aee6487cb4408691c85ece74c50557561e00333c0b2cc866114809be4"
+    },
+    {
+      "case_id": "multiple-go-10",
+      "source": "package main\n\nfunc make_palindrome(myString string) string {\n    for i := len(myString); i >= 0; i-- {\n        if isPalindrome(myString[:i]) {\n            return myString + reverse(myString[i:])\n        }\n    }\n    return myString\n}\n\nfunc isPalindrome(s string) bool {\n    for i := 0; i < len(s)/2; i++ {\n        if s[i] != s[len(s)-1-i] {\n            return false\n        }\n    }\n    return true\n}\n\nfunc reverse(s string) string {\n    runes := []rune(s)\n    for i, j := 0, len(runes)-1; i < j; i, j = i+1, j-1 {\n        runes[i], runes[j] = runes[j], runes[i]\n    }\n    return string(runes)\n}\n",
+      "source_sha256": "c58e9e8e1e060579219c44b03d1d63f935ae90d8cdf9b8a51429ac96ec2acbf9"
+    }
+  ]
+}
