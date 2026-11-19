@@ -61,7 +61,7 @@ def reject_excess_tokens(origin: str, secret: str, journal: Path) -> None:
     )
     payload: dict[str, object] = {key: key.lower() + "_context_test" for key in (
         "jobId", "tenantId", "workspaceId", "projectId", "workNodeId", "assignmentId",
-        "authorityId", "agentId", "runId", "admissionId", "roleId", "skillId", "packageId",
+        "authorityId", "agentId", "runId", "admissionId", "roleId", "skillId", "packageId", "artifactId",
     )}
     payload.update(taskId="tsk_" + "e" * 32, objective=goal,
         allowedActions=["read_context", "produce_artifact"], providerBudgetMicrousd=1000,
