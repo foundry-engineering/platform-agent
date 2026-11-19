@@ -87,7 +87,7 @@ jobs:
         run: |
           FOUNDRY_CONTEXT_REPORT="$RUNNER_TEMP/foundry-source-context.json" \
           FOUNDRY_BUILDER_MODEL_ASSETS="$RUNNER_TEMP/foundry-coding-model" \
-            uv run pytest -s -vv 'tests/test_postgres_artifact_worker.py::test_core_builder_runs_metered_model_and_final_scanned_zip[live_polyglot]' 'tests/test_postgres_artifact_worker.py::test_core_builder_runs_metered_model_and_final_scanned_zip[live]' 'tests/test_postgres_artifact_worker.py::test_core_builder_runs_metered_model_and_final_scanned_zip[live_units]' 'tests/test_postgres_artifact_worker.py::test_core_builder_runs_metered_model_and_final_scanned_zip[live_auto]' 'tests/test_postgres_artifact_worker.py::test_core_builder_runs_metered_model_and_final_scanned_zip[live_context]'
+            uv run pytest -x -s -vv 'tests/test_postgres_artifact_worker.py::test_core_builder_runs_metered_model_and_final_scanned_zip[live_context]' 'tests/test_postgres_artifact_worker.py::test_core_builder_runs_metered_model_and_final_scanned_zip[live_polyglot]' 'tests/test_postgres_artifact_worker.py::test_core_builder_runs_metered_model_and_final_scanned_zip[live]' 'tests/test_postgres_artifact_worker.py::test_core_builder_runs_metered_model_and_final_scanned_zip[live_units]' 'tests/test_postgres_artifact_worker.py::test_core_builder_runs_metered_model_and_final_scanned_zip[live_auto]'
       - name: Preserve actual source-context acceptance
         if: github.event_name != 'push' && always()
         uses: actions/upload-artifact@v4
