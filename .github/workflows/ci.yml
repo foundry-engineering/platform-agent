@@ -85,8 +85,17 @@ jobs:
           FOUNDRY_PLATFORM_TEST_DATABASE_URL: postgres://platform_ci:platform_ci_test_only@127.0.0.1:5432/platform_authority_test
           FOUNDRY_RUNNER_SOURCE_ROOT: ${{ github.workspace }}/.integration/runner
         run: |
+          FOUNDRY_CONTEXT_REPORT="$RUNNER_TEMP/foundry-source-context.json" \
           FOUNDRY_BUILDER_MODEL_ASSETS="$RUNNER_TEMP/foundry-coding-model" \
-            uv run pytest -s -vv 'tests/test_postgres_artifact_worker.py::test_core_builder_runs_metered_model_and_final_scanned_zip[live_polyglot]' 'tests/test_postgres_artifact_worker.py::test_core_builder_runs_metered_model_and_final_scanned_zip[live]' 'tests/test_postgres_artifact_worker.py::test_core_builder_runs_metered_model_and_final_scanned_zip[live_units]' 'tests/test_postgres_artifact_worker.py::test_core_builder_runs_metered_model_and_final_scanned_zip[live_auto]'
+            uv run pytest -s -vv 'tests/test_postgres_artifact_worker.py::test_core_builder_runs_metered_model_and_final_scanned_zip[live_polyglot]' 'tests/test_postgres_artifact_worker.py::test_core_builder_runs_metered_model_and_final_scanned_zip[live]' 'tests/test_postgres_artifact_worker.py::test_core_builder_runs_metered_model_and_final_scanned_zip[live_units]' 'tests/test_postgres_artifact_worker.py::test_core_builder_runs_metered_model_and_final_scanned_zip[live_auto]' 'tests/test_postgres_artifact_worker.py::test_core_builder_runs_metered_model_and_final_scanned_zip[live_context]'
+      - name: Preserve actual source-context acceptance
+        if: github.event_name != 'push' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent01-source-context
+          path: ${{ runner.temp }}/foundry-source-context.json
+          if-no-files-found: warn
+          retention-days: 14
       - name: Provision the frozen 30B coding candidate inside existing CI capacity
         if: github.event_name != 'push'
         timeout-minutes: 10

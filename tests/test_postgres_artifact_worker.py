@@ -256,7 +256,7 @@ def quality_coding_runtime(tmp_path_factory):
                 )
 
 
-@pytest.mark.parametrize("sandbox", ["unit", "docker", "project", "live", "live_units", "live_auto", "live_polyglot", *CASE_IDS, *REPAIR_IDS])
+@pytest.mark.parametrize("sandbox", ["unit", "docker", "project", "live", "live_units", "live_auto", "live_polyglot", "live_context", *CASE_IDS, *REPAIR_IDS])
 def test_core_builder_runs_metered_model_and_final_scanned_zip(database, tmp_path, monkeypatch, sandbox, request):
     """Signed Builder with actual persistence and optional real model and Docker."""
     import io
@@ -274,14 +274,15 @@ def test_core_builder_runs_metered_model_and_final_scanned_zip(database, tmp_pat
     quality = sandbox in CASE_IDS
     repair = sandbox in REPAIR_IDS
     evaluating = quality or repair
-    if (evaluating or sandbox in {"live", "live_units", "live_auto", "live_polyglot"}) and not os.environ.get("FOUNDRY_BUILDER_MODEL_ASSETS"):
+    if (evaluating or sandbox in {"live", "live_units", "live_auto", "live_polyglot", "live_context"}) and not os.environ.get("FOUNDRY_BUILDER_MODEL_ASSETS"):
         pytest.skip("live model weights are explicitly configured in acceptance")
     if sandbox in {"docker", "project"} and os.environ.get("FOUNDRY_BUILDER_REAL_DOCKER") != "1":
         pytest.skip("actual Docker execution is mandatory in native integration")
-    live = evaluating or sandbox in {"live", "live_units", "live_auto", "live_polyglot"}
+    live = evaluating or sandbox in {"live", "live_units", "live_auto", "live_polyglot", "live_context"}
     live_units = sandbox in {"live_units", "live_auto"}
     auto = sandbox == "live_auto"
     polyglot = sandbox == "live_polyglot"
+    larger_context = sandbox == "live_context"
     automatic_plan = None
     project = sandbox == "project"
     from work_unit_fixture import FILES, PARTS, PATHS, UNITS, assigned_unit, verifiers as project_verifiers
@@ -312,6 +313,10 @@ def test_core_builder_runs_metered_model_and_final_scanned_zip(database, tmp_pat
         if live else "Build a tenant-isolated application in approved work units"
         if project else "Build a function returning 42"
     )
+    if larger_context:
+        from source_context_acceptance import OBJECTIVE
+        objective = OBJECTIVE
+        h.config = replace(h.config, max_input_tokens=3072)
     quality_case = None
     if repair:
         from public_repairs import selected, goal as repair_goal
@@ -340,6 +345,9 @@ def test_core_builder_runs_metered_model_and_final_scanned_zip(database, tmp_pat
     grant["policy_ref"] = {**grant["policy_ref"], "policy_sha256": "a" * 64}
     if project:
         grant["read_paths"], grant["write_paths"] = list(PATHS), list(PATHS)
+    if larger_context:
+        grant["read_paths"] = ["src/app.py", "src/reference.py"]
+        grant["write_paths"] = ["src/app.py"]
     grant["grant_id"] = derive_execution_grant_id(grant)
     code.grant = sign_execution_grant(grant, signers=(ExecutionGrantSigner("kid_builder-grant.v1",
         code.grant_key.public_key().public_bytes_raw(), code.grant_key.sign),))
@@ -409,6 +417,9 @@ def test_core_builder_runs_metered_model_and_final_scanned_zip(database, tmp_pat
         else:
             provider_origin, secret = request.getfixturevalue("live_coding_runtime")
         model_id = MODEL_ID
+        if larger_context:
+            from source_context_acceptance import reject_excess_tokens
+            reject_excess_tokens(provider_origin, secret, tmp_path / "llama/state/inference.sqlite3")
     else:
         model_id = "core-builder-inference-fixture"
         settings = ModelSettings(model_id=model_id, upstream_url="http://127.0.0.1:8000/v1/chat/completions",
@@ -531,6 +542,15 @@ class OrderTotals(unittest.TestCase):
             profile=TrustedSandboxProfile(image=IMAGE,
                 checks=tuple(check for check in checks if check.check_id in unit.check_ids)))
             for unit in live_work_units}
+    if larger_context:
+        from platform_agent.builder_work_units import BuilderWorkUnit
+        from source_context_acceptance import configure
+        reference_bytes = configure(code.workspace)
+        original = source.read_bytes()
+        live_paths = ("src/app.py", "src/reference.py")
+        live_work_units = (BuilderWorkUnit("reference-adapter", objective, live_paths,
+            ("src/app.py",), (), code.task.max_rounds, ("python-unittest",)),)
+        live_verifiers = {"reference-adapter": verifier}
     if polyglot:
         from engineering_agent.sandbox_matrix import DockerSandboxMatrixVerifier
         from polyglot_acceptance import configure_polyglot, report_model_errors
@@ -547,7 +567,7 @@ class OrderTotals(unittest.TestCase):
         live_paths = (quality_case["source_path"],)
     if sandbox == 'unit':
         verifier = code.verifier
-    unit_verifiers = live_verifiers if live_units else None
+    unit_verifiers = live_verifiers if live_units or larger_context else None
     if project:
         verifier, unit_verifiers = project_verifiers(code.workspace, evidence, docker=True)
     try:
@@ -556,7 +576,7 @@ class OrderTotals(unittest.TestCase):
             assert not baseline.passed and baseline.evidence_refs
         worker = CoreBuilderWorker(control=control,
             configuration=CoreBuilderConfiguration(code.task, h.config, h.job.work_node_id,
-                PATHS if project else live_paths if live_units or polyglot or evaluating else ('src/app.py',), code.workspace, code.state,
+                PATHS if project else live_paths if live_units or polyglot or evaluating or larger_context else ('src/app.py',), code.workspace, code.state,
                 work_units=UNITS if project else live_work_units, automatic_plan=automatic_plan, diagnose_first=polyglot or repair),
             authority_factory=lambda check: code.authority(execution_checkpoint=check), worker_factory=factory,
             verifier=verifier, artifacts=code.artifacts,
@@ -583,7 +603,7 @@ class OrderTotals(unittest.TestCase):
         with zipfile.ZipFile(io.BytesIO(peers.objects[peers.current]["content"])) as archive:
             final = archive.read("src/main.py" if project else "src/orders.py" if live_units else "src/app.py")
             manifest = json.loads(archive.read("builder-result.json"))
-            if live_units:
+            if live_units or larger_context:
                 assert set(archive.namelist()) == {*live_paths, "builder-result.json"}
                 assert manifest["files"] == [{"path": path, "sha256": hashlib.sha256(archive.read(path)).hexdigest()}
                     for path in live_paths]
@@ -605,7 +625,7 @@ class OrderTotals(unittest.TestCase):
         rounds = len(manifest["steps"])
         assert len(peers.uploads) == rounds + 1
         assert manifest["delivery_verification"]["passed"] is True
-        if not live_units and not polyglot:
+        if not live_units and not polyglot and not larger_context:
             assert manifest["files"] == ([{"path": path, "sha256": hashlib.sha256(FILES[path].encode()).hexdigest()}
                 for path in PATHS] if project else [{"path": "src/app.py", "sha256": hashlib.sha256(final).hexdigest()}])
         if project:
@@ -615,6 +635,9 @@ class OrderTotals(unittest.TestCase):
         elif live:
             assert inference.calls == 0 and 1 <= rounds <= code.task.max_rounds
             assert final != original and final == source.read_bytes()
+            if larger_context:
+                from source_context_acceptance import verify_context
+                verify_context(code.workspace, reference_bytes, model_contexts, manifest)
         else:
             assert inference.calls == rounds == 2
             assert b"return 42" in final
@@ -632,10 +655,16 @@ class OrderTotals(unittest.TestCase):
                     and input_tokens > 0 and output_tokens > 0
                     for provider, model, cost, input_tokens, output_tokens in settlements
                 )
-                print(json.dumps({
+                if larger_context:
+                    assert all(row[3] <= 3072 and row[4] <= 192 for row in settlements)
+                observed = {
                     "model": model_id,
                     "automaticPlanning": auto,
                     "polyglot": polyglot,
+                    "largerSourceContext": larger_context,
+                    "referenceBytes": len(reference_bytes) if larger_context else None,
+                    "maximumInputTokensPerCall": 3072 if larger_context else None,
+                    "referenceSha256": hashlib.sha256(reference_bytes).hexdigest() if larger_context else None,
                     "languages": ["Python", "JavaScript", "Go"] if polyglot else ["Python"],
                     "planSha256": automatic_plan.evidence()["plan_sha256"] if auto else None,
                     "rounds": rounds,
@@ -643,7 +672,19 @@ class OrderTotals(unittest.TestCase):
                     "outputTokens": sum(row[4] for row in settlements),
                     "sourceSha256": hashlib.sha256(final).hexdigest(),
                     "verifiedDelivery": manifest["delivery_verification"]["evidence_refs"],
-                }, sort_keys=True))
+                }
+                print(json.dumps(observed, sort_keys=True))
+                if larger_context and os.environ.get("FOUNDRY_CONTEXT_REPORT"):
+                    from engineering_agent.model_host import DEFAULT_PROFILE, RUNTIME
+                    observed.update(schemaVersion="foundry.actual-source-context.v1",
+                        profile=replace(DEFAULT_PROFILE, max_output_tokens=192).identity(),
+                        runtimeSha256=RUNTIME.sha256, excessTokensRejectedBeforeClaim=True,
+                        referenceUnchanged=True, privateCandidateVerified=True,
+                        enterpriseReleaseApproved=False, marketRankClaim=False)
+                    target = Path(os.environ["FOUNDRY_CONTEXT_REPORT"])
+                    with target.open("x", encoding="utf-8") as report_file:
+                        target.chmod(0o600)
+                        json.dump(observed, report_file, sort_keys=True, indent=2)
             assert db.execute('SELECT count(*) FROM foundry_waw_invocation_claim').fetchone() == (rounds,)
             assert db.execute("SELECT reserved_paid_invocations FROM foundry_budget_scope WHERE scope_type='task'").fetchone() == (rounds,)
     finally:

@@ -1,0 +1,9 @@
+# Actual source-context acceptance
+
+The managed model host now uses its checksum-pinned llama.cpp chat template and tokenizer when the byte-based safe path would reject a larger prompt. Unavailable tokenization and counts beyond the original allowance fail before journal claim and generation. The input, output, request-byte, authority and pricing limits remain unchanged.
+
+The new `live_context` native acceptance reads the full public `src/platform_agent/repair_evaluation.py` module, asks the actual coding model to implement a compatible summary adapter, and checks its output using independent Python tests inside the pinned Docker image. The signed grant permits reading both files but writing only the adapter. The reference bytes must remain unchanged; PostgreSQL records every model invocation, actual token usage and settlement; the resulting private candidate ZIP is independently verified.
+
+A separate request to that same live host sends deterministic high-entropy input and a forged client token count of zero. It must return the token-budget error without creating an inference journal claim. The positive case retains 3,072 maximum input tokens, the 256-token admission margin and 192 maximum output tokens. The source alone exceeds the previous byte threshold; copying a short solution without reading source does not constitute this acceptance.
+
+Local validation: full Platform regression suite, Ruff, strict source and helper type checks, compileall. Native `ci` must pass the added actual model case and the unchanged nine raw public cases plus four recorded-failure repairs before merge. Its source-context receipt is preserved separately from the public quality report. These are bounded coding and integration checks, not proof of arbitrary complex project completion, production hosting, enterprise release or market rank.
