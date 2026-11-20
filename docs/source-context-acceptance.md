@@ -23,3 +23,12 @@ Run 44608698496 remained red with bounded diagnostics. The next task wording exp
 Run 44610605524 confirmed that bounded raw diagnostic tails reached the 30B model but did not produce a correct repair. The context task now additionally uses the existing host-owned functional oracle, followed by the unchanged original unittest check. The oracle exposes only a complete preapproved public argument vector and the observed candidate result on mismatch; its expected results remain on the trusted host. It also checks an additional mixed-outcome vector. All original assertions, the reference bytes, write scope, three attempts and 3,072/192 token limits remain enforced. No source solution is supplied. Both checks must pass again before sealing delivery.
 
 The next coordinated source pins protected Engineering 28c17a681984a11f40777b467b7bdc51fc751fb0. Its generic AST-only partial return-expression index describes source-derived formulas with path/hash/location and retains full original source. Identical task and work-unit objectives are sent once, preserving budget for context. The actual 30B task, host-owned result comparison, original unittest, source immutability, 3,072/192 token limits and three-call ceiling remain required. Previous failures are preserved; qualification is pending on this exact source.
+
+Native run 44684033323 still failed with the generic source-expression index.
+The next source pins protected Engineering da3de5e8cd3b21f59d841fa4e97269305f24fb4c,
+whose compact generator policy explicitly requires tracing source relationships
+and local bindings, including overlapping result fields. It embeds no
+task-specific formula or expected answer, and fits within the previous prompt
+byte allowance. Full local Engine and Platform regressions, strict typing,
+capacity checks and Engine native Docker/CI passed. All actual-model and
+browser/delivery/recovery gates remain required on this coordinated source.
