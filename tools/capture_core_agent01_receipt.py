@@ -59,6 +59,7 @@ def main() -> None:
         raise ValueError("sealed delivered bytes required")
     receipt = {
         "schemaVersion": "foundry.core-agent01-qualified-runtime.v1",
+        "acceptanceWorkflowCommit": git_id(Path(__file__).resolve().parents[1], "HEAD"),
         "runUrl": args.run_url, "coreCommit": args.core_commit,
         "platformCommit": args.platform_commit,
         "coreRuntimeObjectIds": {path: git_id(args.core, "HEAD:" + path) for path in CORE_OBJECTS},

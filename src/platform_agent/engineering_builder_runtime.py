@@ -137,7 +137,13 @@ class TenantBuilderRuntime:
             raise BuilderBoundaryError("Builder requires a positive admitted model budget")
         if artifacts.root == root or artifacts.root.is_relative_to(root):
             raise BuilderBoundaryError("private Builder artifacts must be outside the workspace")
-        authority.require_source_paths(source_paths)
+        if work_units:
+            validate_work_units(authority.task, source_paths, work_units, authority.policy_ref)
+        output_paths = (
+            tuple(sorted({path for unit in work_units for path in unit.output_paths}))
+            if work_units else source_paths
+        )
+        authority.require_source_paths(source_paths, output_paths=output_paths)
         if automatic_plan is not None:
             if (automatic_plan.units != work_units
                     or set(automatic_plan.specification.source_paths) != set(source_paths)):
@@ -152,7 +158,6 @@ class TenantBuilderRuntime:
         self._unit_results: list[dict[str, Any]] = []
         self._context: ScopedSourceContext | ProjectSourceContext
         if work_units:
-            validate_work_units(authority.task, source_paths, work_units, authority.policy_ref)
             if set(self._unit_verifiers) != {unit.unit_id for unit in work_units}:
                 raise BuilderBoundaryError("each work unit requires its exact independent verifier")
             self._context = ProjectSourceContext(root, source_paths, work_units)
