@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+import pytest
+
 from engineering_agent.model_profiles import ModelProfile, load_model_profile
 from engineering_agent.functional_oracle import FunctionalOracleCommand
 from engineering_agent.sandbox_verifier import DockerSandboxVerifier, TrustedCheck, TrustedSandboxProfile
@@ -30,6 +32,23 @@ def context_model_profile() -> ModelProfile:
     if profile.max_input_tokens != 3072:
         raise ValueError("source-context acceptance must retain its original input ceiling")
     return profile
+
+
+def report_model_errors(monkeypatch: pytest.MonkeyPatch, origin: str) -> None:
+    """Expose bounded static errors from this isolated public-fixture host only."""
+    endpoint = urlsplit(origin)
+    assert endpoint.scheme == "http" and endpoint.hostname == "127.0.0.1" and endpoint.port
+    original = http.client.HTTPConnection.getresponse
+
+    def response(connection: http.client.HTTPConnection) -> http.client.HTTPResponse:
+        result = original(connection)
+        if (connection.host == endpoint.hostname and connection.port == endpoint.port
+                and not 200 <= result.status < 300):
+            body = result.read(4096).decode("utf-8", errors="replace")
+            raise AssertionError(f"isolated context model HTTP {result.status}: {body}")
+        return result
+
+    monkeypatch.setattr(http.client.HTTPConnection, "getresponse", response)
 
 
 def failure_diagnostics(workspace: Path, evidence: Path) -> dict[str, Any]:

@@ -423,10 +423,11 @@ def test_core_builder_runs_metered_model_and_final_scanned_zip(database, tmp_pat
             provider_origin, secret = request.getfixturevalue("live_coding_runtime")
         model_id = MODEL_ID
         if larger_context:
-            from source_context_acceptance import context_model_profile, reject_excess_tokens
+            from source_context_acceptance import context_model_profile, reject_excess_tokens, report_model_errors
             context_profile = context_model_profile()
             model_id = context_profile.model_id
             reject_excess_tokens(provider_origin, secret, tmp_path / "llama/state/inference.sqlite3")
+            report_model_errors(monkeypatch, provider_origin)
     else:
         model_id = "core-builder-inference-fixture"
         settings = ModelSettings(model_id=model_id, upstream_url="http://127.0.0.1:8000/v1/chat/completions",

@@ -32,3 +32,9 @@ task-specific formula or expected answer, and fits within the previous prompt
 byte allowance. Full local Engine and Platform regressions, strict typing,
 capacity checks and Engine native Docker/CI passed. All actual-model and
 browser/delivery/recovery gates remain required on this coordinated source.
+
+Run 44685773591 stopped before receiving a model proposal with a non-success
+provider response. The public context fixture now captures only that isolated
+loopback host's bounded error body after the deliberate overflow probe, so
+transport, timeout, token admission and incomplete output can be distinguished.
+It does not change provider behavior, retries, limits or verification results.
