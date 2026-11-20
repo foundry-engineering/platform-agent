@@ -55,10 +55,11 @@ class BuilderWorkUnit:
         if len(self.model_instruction()) > 2000:
             raise BuilderBoundaryError("work-unit model instruction exceeds the feedback limit")
 
-    def model_instruction(self) -> str:
-        return "Approved work-unit data: " + json.dumps({
-            "unitId": self.unit_id, "objective": self.objective, "outputPaths": self.output_paths,
-        }, ensure_ascii=False, separators=(",", ":"))
+    def model_instruction(self, *, include_objective: bool = True) -> str:
+        value: dict[str, object] = {"unitId": self.unit_id, "outputPaths": self.output_paths}
+        if include_objective:
+            value["objective"] = self.objective
+        return "Approved work-unit data: " + json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
     @classmethod
     def from_payload(cls, value: object) -> BuilderWorkUnit:
@@ -145,5 +146,6 @@ class WorkUnitPlanner:
 
     def propose(self, task: BuilderTask, feedback: tuple[str, ...],
                 *, remaining_budget_microusd: int) -> PlanProposal:
-        return self._planner.propose(task, (self._unit.model_instruction(), *feedback),
+        instruction = self._unit.model_instruction(include_objective=self._unit.objective != task.goal)
+        return self._planner.propose(task, (instruction, *feedback),
             remaining_budget_microusd=remaining_budget_microusd)

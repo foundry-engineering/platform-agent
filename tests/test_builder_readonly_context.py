@@ -97,3 +97,13 @@ def test_model_proposal_cannot_write_a_read_only_context_file(tmp_path):
     assert not (h.workspace / PATHS[0]).exists()
     assert (h.workspace / PATHS[1]).read_bytes() == reference
     assert h.artifacts.list_project(h.admission.tenant_context, repository_id=h.repo) == ()
+
+
+def test_identical_work_unit_objective_is_sent_once_in_the_task_goal(tmp_path):
+    h, unit = scoped_context(tmp_path)
+    result = runtime(h, unit).run()
+    assert result.execution.status == "verified"
+    for request in h.runner.requests:
+        assert request.goal == unit.objective
+        instruction = json.loads(request.verification_feedback[0].split(": ", 1)[1])
+        assert instruction == {"unitId": unit.unit_id, "outputPaths": list(unit.output_paths)}
