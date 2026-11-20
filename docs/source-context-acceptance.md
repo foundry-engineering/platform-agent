@@ -62,3 +62,29 @@ Docker checks passed. Public result keys are explicit trusted verifier
 configuration; model-written data cannot select them. Full context, original
 3,072/192 token ceilings, three calls, result oracle, original unittest and
 final re-verification remain required.
+
+## Candidate change after repeated negative evidence
+
+Run 44689578575 again failed the unchanged source contract after three actual
+30B Q2 proposals, even with approved field diagnostics. Its separate browser,
+scan, delivery and cold-recovery run 44689578409 passed. The larger-source
+capability of this quantized candidate is not accepted. Further prompt tuning
+on this fixed case is stopped.
+
+The next full evaluation selects official Qwen2.5-Coder-14B-Instruct Q4_K_M
+weights from Qwen's GGUF repository, frozen at
+`d0a692ef765eefbf2fabb130b3cb2e8917e3d225`. Official API metadata and the
+pinned file page verify the 8,988,110,272-byte file and SHA-256
+`c1e659736d89ac1065fb495330fb824d94001974a4bfa78e7270e43476a8d940`.
+The pinned Apache-2.0 license is retained under deploy/profiles/licenses.
+Sources: https://huggingface.co/Qwen/Qwen2.5-Coder-14B-Instruct-GGUF/blob/d0a692ef765eefbf2fabb130b3cb2e8917e3d225/qwen2.5-coder-14b-instruct-q4_k_m.gguf
+and the same revision's LICENSE.
+
+This is a candidate comparison, not a claim that parameter count predicts
+quality. The complete unchanged source case, nine public coding tasks, four
+recorded-error repairs, four original 7B compatibility cases and full separate
+browser/delivery/recovery chain remain required. Source assertions, 3,072/192
+context limits, 512-token public evaluation ceiling, three-call context/repair
+limits, authority, expected answers and checks are unchanged. No paid service
+is provisioned; preflight must fit existing CI capacity before asset download.
+The prior frozen 30B profile and failure evidence remain available.

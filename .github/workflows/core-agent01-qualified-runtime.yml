@@ -106,7 +106,7 @@ jobs:
           FOUNDRY_AGENT01_MODEL_PROFILE: ${{ runner.temp }}/agent01-model-profile.json
         run: |
           set -euo pipefail
-          install -m 0600 .integration/platform/deploy/profiles/qwen3-coder-30b-a3b-q2-xl.json "$FOUNDRY_AGENT01_MODEL_PROFILE"
+          install -m 0600 .integration/platform/deploy/profiles/qwen25-coder-14b-q4-k-m.json "$FOUNDRY_AGENT01_MODEL_PROFILE"
           uv run --project .integration/platform --no-sync python - <<'PY'
           import json, os, shutil
           from pathlib import Path

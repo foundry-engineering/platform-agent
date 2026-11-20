@@ -1,0 +1,38 @@
+{
+  "schemaVersion": "foundry.failed-source-context-checkpoint.v1",
+  "runUrl": "https://github.com/foundry-engineering/platform-agent/actions/runs/44689578575",
+  "separateBrowserRunUrl": "https://github.com/foundry-engineering/platform-agent/actions/runs/44689578409",
+  "platformCommit": "725abda953007929721dcdfe14c9716389203992",
+  "engineeringCommit": "b3e773c9ad285e02ae401bf08e4fb5a0ff7dfabe",
+  "model": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
+  "outcome": "unqualified",
+  "modelContextSubmissions": 3,
+  "publicResultKeyFeedbackReachedModel": true,
+  "enterpriseReleaseApproved": false,
+  "marketRankClaim": false,
+  "sourceSha256": "9bea7aa349f5356ee113c2380850bf72cc8cb31b696c5fc7a0a4ad1743d530f0",
+  "publicFixtureSource": "def repair_summary(outcomes: list[str]) -> dict[str, int]:\n    if not all(outcome in (\"verified\", \"needs_revision\", \"blocked\") for outcome in outcomes):\n        raise ValueError(\"invalid outcome\")\n    passed = sum(outcome == \"verified\" for outcome in outcomes)\n    failed = sum(outcome == \"needs_revision\" for outcome in outcomes)\n    blocked = sum(outcome == \"blocked\" for outcome in outcomes)\n    return {'passed': passed, 'failed': failed, 'blocked': blocked}\n",
+  "checks": [
+    {
+      "check_id": "reference-results",
+      "diagnostic_tail": "Public counterexample: {\"arguments\":[[\"verified\",\"blocked\",\"needs_revision\",\"verified\"]],\"observedResult\":{\"passed\":0,\"failed\":0,\"blocked\":0},\"mismatchedKeys\":[\"passed\",\"failed\",\"blocked\"]}",
+      "exit_code": 1,
+      "passed": false,
+      "round": 1
+    },
+    {
+      "check_id": "reference-results",
+      "diagnostic_tail": "Public counterexample: {\"arguments\":[[\"verified\",\"blocked\",\"needs_revision\",\"verified\"]],\"observedResult\":{\"passed\":2,\"failed\":1,\"blocked\":1},\"mismatchedKeys\":[\"failed\"]}",
+      "exit_code": 1,
+      "passed": false,
+      "round": 1
+    },
+    {
+      "check_id": "reference-results",
+      "diagnostic_tail": "Public counterexample: {\"arguments\":[[\"verified\",\"blocked\",\"needs_revision\",\"verified\"]],\"observedResult\":{\"passed\":2,\"failed\":1,\"blocked\":1},\"mismatchedKeys\":[\"failed\"]}",
+      "exit_code": 1,
+      "passed": false,
+      "round": 2
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "schemaVersion": "foundry.model-profile.v1",
+  "contextTokens": 4096,
+  "maxInputTokens": 3072,
+  "maxOutputTokens": 512,
+  "runtimeReserveBytes": 1073741824,
+  "contextReserveBytes": 536870912,
+  "modelId": "Qwen/Qwen2.5-Coder-14B-Instruct",
+  "sourceRepository": "Qwen/Qwen2.5-Coder-14B-Instruct-GGUF",
+  "revision": "d0a692ef765eefbf2fabb130b3cb2e8917e3d225",
+  "weights": [
+    {
+      "name": "qwen2.5-coder-14b-instruct-q4_k_m.gguf",
+      "url": "https://huggingface.co/Qwen/Qwen2.5-Coder-14B-Instruct-GGUF/resolve/d0a692ef765eefbf2fabb130b3cb2e8917e3d225/qwen2.5-coder-14b-instruct-q4_k_m.gguf",
+      "sha256": "c1e659736d89ac1065fb495330fb824d94001974a4bfa78e7270e43476a8d940",
+      "size": 8988110272
+    }
+  ]
+}
