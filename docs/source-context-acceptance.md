@@ -38,3 +38,11 @@ provider response. The public context fixture now captures only that isolated
 loopback host's bounded error body after the deliberate overflow probe, so
 transport, timeout, token admission and incomplete output can be distinguished.
 It does not change provider behavior, retries, limits or verification results.
+
+Run 44686743296 exposed an HTTP 502 uncertain-inference result at the
+110-second upstream deadline before any proposal. The coordinated dependency
+now pins protected Engineering b69756add1ce891c915b7d60894ebd8a2b76f470.
+Its model instruction includes the actual existing completion-token ceiling,
+within the previous system-prompt byte allowance. No token/time budget or
+reference/result check changes. Fresh context and full delivery/recovery
+qualification remain required.
