@@ -46,3 +46,19 @@ Its model instruction includes the actual existing completion-token ceiling,
 within the previous system-prompt byte allowance. No token/time budget or
 reference/result check changes. Fresh context and full delivery/recovery
 qualification remain required.
+
+Run 44687823570 returned three actual bounded proposals but failed the same
+reference-derived result field; publication remained blocked. The context
+oracle now explicitly admits only its three already public result keys for
+field-level mismatch diagnostics. Expected values, all result comparisons,
+original unittest checks and the reference remain unchanged. The key allowlist
+is bound into the host-owned oracle commitment. Receipts record whether this
+feedback was actually used; more precise diagnostics are not themselves a
+model-quality success.
+
+The coordinated source pins protected Engineering
+b3e773c9ad285e02ae401bf08e4fb5a0ff7dfabe after native Engine CI and actual
+Docker checks passed. Public result keys are explicit trusted verifier
+configuration; model-written data cannot select them. Full context, original
+3,072/192 token ceilings, three calls, result oracle, original unittest and
+final re-verification remain required.

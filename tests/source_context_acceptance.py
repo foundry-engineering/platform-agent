@@ -16,6 +16,8 @@ from engineering_agent.model_profiles import ModelProfile, load_model_profile
 from engineering_agent.functional_oracle import FunctionalOracleCommand
 from engineering_agent.sandbox_verifier import DockerSandboxVerifier, TrustedCheck, TrustedSandboxProfile
 
+PUBLIC_RESULT_KEYS = ("passed", "failed", "blocked")
+
 OBJECTIVE = (
     "Implement repair_summary(outcomes: list[str]) -> dict[str, int] in src/app.py. "
     "Derive passed, failed and blocked counts from repair_report in the read-only "
@@ -119,7 +121,7 @@ def context_verifier(workspace: Path, evidence: Path, image: str) -> DockerSandb
         "with open('/workspace/tests/context_inputs.json') as stream: inputs=json.load(stream)\n"
         "print(json.dumps([repair_summary(*args) for args in inputs],allow_nan=False,separators=(',',':')))\n"
     )
-    oracle = FunctionalOracleCommand(expected, public_inputs=inputs)
+    oracle = FunctionalOracleCommand(expected, public_inputs=inputs, public_result_keys=PUBLIC_RESULT_KEYS)
     checks = (
         TrustedCheck("reference-results", ("/usr/local/bin/python", "-B", "/workspace/tests/context_probe.py")),
         TrustedCheck("python-unittest", ("/usr/local/bin/python", "-B", "-m", "unittest",

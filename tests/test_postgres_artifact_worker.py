@@ -553,7 +553,7 @@ class OrderTotals(unittest.TestCase):
             for unit in live_work_units}
     if larger_context:
         from platform_agent.builder_work_units import BuilderWorkUnit
-        from source_context_acceptance import configure, context_verifier
+        from source_context_acceptance import PUBLIC_RESULT_KEYS, configure, context_verifier
         reference_bytes = configure(code.workspace)
         verifier = context_verifier(code.workspace, evidence, IMAGE)
         original = source.read_bytes()
@@ -685,6 +685,9 @@ class OrderTotals(unittest.TestCase):
                     "maximumDiagnosticBytesPerCheck": 384 if larger_context else None,
                     "firstAttemptPassed": manifest["steps"][0]["verification"]["passed"] if larger_context else None,
                     "verificationCheckIds": manifest["delivery_verification"]["check_ids"] if larger_context else None,
+                    "approvedPublicResultKeys": list(PUBLIC_RESULT_KEYS) if larger_context else None,
+                    "publicResultKeyFeedbackUsed": any('"mismatchedKeys"' in feedback
+                        for context in model_contexts for feedback in context["verificationFeedback"]) if larger_context else None,
                     "publicCounterexampleFeedbackUsed": any("Public counterexample:" in feedback
                         for context in model_contexts for feedback in context["verificationFeedback"]) if larger_context else None,
                     "referenceSha256": hashlib.sha256(reference_bytes).hexdigest() if larger_context else None,
