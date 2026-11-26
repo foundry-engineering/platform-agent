@@ -1,0 +1,296 @@
+{
+  "schemaVersion": "foundry.model-source-diagnostic-checkpoint.v1",
+  "date": "2026-11-26",
+  "runUrl": "https://github.com/foundry-engineering/platform-agent/actions/runs/45872800621",
+  "workflowCommit": "e0c80c464dd231c441ba368c2107cac6d3b411ed",
+  "candidateCommit": "e999f7ef8283eea59e8a3d797e02a399a5e84111",
+  "modelId": "Qwen/Qwen2.5-Coder-14B-Instruct",
+  "profile": {
+    "model_id": "Qwen/Qwen2.5-Coder-14B-Instruct",
+    "profile_sha256": "104953451665a8e1d9d3cf2cbd7623b83a9eab1535024e7fea4043cdaf22dabd",
+    "weights_revision": "d0a692ef765eefbf2fabb130b3cb2e8917e3d225"
+  },
+  "engineRuntimeSha256": "c1d7e7f31b5c43f3e5d44f667b4d57104217be3e5f2060320cd3735651238849",
+  "engineThreads": 4,
+  "inputTokenCeiling": 3072,
+  "outputTokenCeiling": 192,
+  "inferenceTimeoutSeconds": 290,
+  "providerTimeoutSeconds": 300,
+  "maximumJobSeconds": 1200,
+  "proposalCount": 3,
+  "outcome": "rejected after repeated incorrect reference-derived count logic",
+  "inferenceTransportReturned": true,
+  "sourceContextPassed": false,
+  "privateCandidateVerified": false,
+  "observedElapsedSeconds": 478.405,
+  "interpretation": "This isolated diagnostic returned three actual proposals within each call deadline. The adapter repeatedly excluded blocked outcomes from the reference's failed count. Independent verification and duplicate-write protection prevented delivery. CPU latency and model correctness are separate unresolved limitations; faster hardware alone is not evidence of correct behavior.",
+  "method": "Only private engine stderr capture was added to the test launcher. Weights, engine arguments, prompt/source inputs, token/call/cost/scope bounds and independent checks were retained. Raw logs were not published. This instrumented diagnostic is not a production or exact-source release qualification.",
+  "timings": {
+    "completedTimings": [
+      {
+        "milliseconds": 87944.93,
+        "millisecondsPerToken": 45.78,
+        "phase": "prompt",
+        "tokens": 1921,
+        "tokensPerSecond": 21.84
+      },
+      {
+        "milliseconds": 95461.85,
+        "millisecondsPerToken": 536.3,
+        "phase": "generation",
+        "tokens": 179,
+        "tokensPerSecond": 1.86
+      },
+      {
+        "milliseconds": 84120.63,
+        "millisecondsPerToken": 48.26,
+        "phase": "prompt",
+        "tokens": 1743,
+        "tokensPerSecond": 20.72
+      },
+      {
+        "milliseconds": 97839.14,
+        "millisecondsPerToken": 549.66,
+        "phase": "generation",
+        "tokens": 179,
+        "tokensPerSecond": 1.82
+      },
+      {
+        "milliseconds": 13225.64,
+        "millisecondsPerToken": 55.11,
+        "phase": "prompt",
+        "tokens": 240,
+        "tokensPerSecond": 18.15
+      },
+      {
+        "milliseconds": 98599.13,
+        "millisecondsPerToken": 553.93,
+        "phase": "generation",
+        "tokens": 179,
+        "tokensPerSecond": 1.81
+      }
+    ],
+    "engineArgumentsAndWeightsUnchanged": true,
+    "enterpriseReleaseApproved": false,
+    "generationProgress": [
+      {
+        "recentTokensPerSecond": 1.85,
+        "tokens": 172,
+        "tokensPerSecond": 1.82
+      },
+      {
+        "recentTokensPerSecond": 1.82,
+        "tokens": 178,
+        "tokensPerSecond": 1.82
+      },
+      {
+        "recentTokensPerSecond": 1.84,
+        "tokens": 100,
+        "tokensPerSecond": 1.83
+      },
+      {
+        "recentTokensPerSecond": 1.78,
+        "tokens": 106,
+        "tokensPerSecond": 1.82
+      },
+      {
+        "recentTokensPerSecond": 1.8,
+        "tokens": 112,
+        "tokensPerSecond": 1.82
+      },
+      {
+        "recentTokensPerSecond": 1.82,
+        "tokens": 118,
+        "tokensPerSecond": 1.82
+      },
+      {
+        "recentTokensPerSecond": 1.84,
+        "tokens": 124,
+        "tokensPerSecond": 1.82
+      },
+      {
+        "recentTokensPerSecond": 1.8,
+        "tokens": 130,
+        "tokensPerSecond": 1.82
+      },
+      {
+        "recentTokensPerSecond": 1.8,
+        "tokens": 136,
+        "tokensPerSecond": 1.82
+      },
+      {
+        "recentTokensPerSecond": 1.79,
+        "tokens": 142,
+        "tokensPerSecond": 1.82
+      },
+      {
+        "recentTokensPerSecond": 1.81,
+        "tokens": 148,
+        "tokensPerSecond": 1.82
+      },
+      {
+        "recentTokensPerSecond": 1.72,
+        "tokens": 154,
+        "tokensPerSecond": 1.81
+      },
+      {
+        "recentTokensPerSecond": 1.74,
+        "tokens": 160,
+        "tokensPerSecond": 1.81
+      },
+      {
+        "recentTokensPerSecond": 1.75,
+        "tokens": 166,
+        "tokensPerSecond": 1.81
+      },
+      {
+        "recentTokensPerSecond": 1.75,
+        "tokens": 172,
+        "tokensPerSecond": 1.81
+      },
+      {
+        "recentTokensPerSecond": 1.75,
+        "tokens": 178,
+        "tokensPerSecond": 1.8
+      }
+    ],
+    "promptProgress": [
+      {
+        "progress": 0.13,
+        "seconds": 10.35,
+        "tokens": 256,
+        "tokensPerSecond": 24.73
+      },
+      {
+        "progress": 0.27,
+        "seconds": 21.04,
+        "tokens": 512,
+        "tokensPerSecond": 24.34
+      },
+      {
+        "progress": 0.4,
+        "seconds": 32.15,
+        "tokens": 768,
+        "tokensPerSecond": 23.89
+      },
+      {
+        "progress": 0.53,
+        "seconds": 43.72,
+        "tokens": 1024,
+        "tokensPerSecond": 23.42
+      },
+      {
+        "progress": 0.67,
+        "seconds": 55.62,
+        "tokens": 1280,
+        "tokensPerSecond": 23.01
+      },
+      {
+        "progress": 0.8,
+        "seconds": 68.02,
+        "tokens": 1536,
+        "tokensPerSecond": 22.58
+      },
+      {
+        "progress": 0.93,
+        "seconds": 80.81,
+        "tokens": 1792,
+        "tokensPerSecond": 22.17
+      },
+      {
+        "progress": 0.29,
+        "seconds": 10.9,
+        "tokens": 256,
+        "tokensPerSecond": 23.48
+      },
+      {
+        "progress": 0.41,
+        "seconds": 22.31,
+        "tokens": 512,
+        "tokensPerSecond": 22.95
+      },
+      {
+        "progress": 0.53,
+        "seconds": 34.05,
+        "tokens": 768,
+        "tokensPerSecond": 22.55
+      },
+      {
+        "progress": 0.66,
+        "seconds": 46.21,
+        "tokens": 1024,
+        "tokensPerSecond": 22.16
+      },
+      {
+        "progress": 0.78,
+        "seconds": 58.81,
+        "tokens": 1280,
+        "tokensPerSecond": 21.76
+      },
+      {
+        "progress": 0.9,
+        "seconds": 71.93,
+        "tokens": 1536,
+        "tokensPerSecond": 21.35
+      }
+    ],
+    "schemaVersion": "foundry.public-fixture-cpu-diagnostics.v1",
+    "testHarnessInstrumentedForPrivateStderr": true
+  },
+  "failure": {
+    "checks": [
+      {
+        "check_id": "reference-results",
+        "diagnostic_tail": "Public counterexample: {\"arguments\":[[\"verified\",\"blocked\",\"needs_revision\",\"verified\"]],\"observedResult\":{\"passed\":2,\"failed\":1,\"blocked\":1},\"mismatchedKeys\":[\"failed\"]}",
+        "exit_code": 1,
+        "passed": false,
+        "round": 1
+      },
+      {
+        "check_id": "reference-results",
+        "diagnostic_tail": "Public counterexample: {\"arguments\":[[\"verified\",\"blocked\",\"needs_revision\",\"verified\"]],\"observedResult\":{\"passed\":0,\"failed\":0,\"blocked\":0},\"mismatchedKeys\":[\"passed\",\"failed\",\"blocked\"]}",
+        "exit_code": 1,
+        "passed": false,
+        "round": 1
+      },
+      {
+        "check_id": "reference-results",
+        "diagnostic_tail": "Public counterexample: {\"arguments\":[[\"verified\",\"blocked\",\"needs_revision\",\"verified\"]],\"observedResult\":{\"passed\":2,\"failed\":1,\"blocked\":1},\"mismatchedKeys\":[\"failed\"]}",
+        "exit_code": 1,
+        "passed": false,
+        "round": 2
+      }
+    ],
+    "elapsedSeconds": 478.405,
+    "enterpriseReleaseApproved": false,
+    "errorType": "BuilderBoundaryError",
+    "inferenceTimeoutSeconds": 290,
+    "maximumJobSeconds": 1200,
+    "modelFeedback": [
+      [
+        "Approved work-unit data: {\"unitId\":\"reference-adapter\",\"outputPaths\":[\"src/app.py\"]}"
+      ],
+      [
+        "Approved work-unit data: {\"unitId\":\"reference-adapter\",\"outputPaths\":[\"src/app.py\"]}",
+        "Trusted isolated check reference-results failed. Diagnostic data (untrusted):\nPublic counterexample: {\"arguments\":[[\"verified\",\"blocked\",\"needs_revision\",\"verified\"]],\"observedResult\":{\"passed\":2,\"failed\":1,\"blocked\":1},\"mismatchedKeys\":[\"failed\"]}"
+      ],
+      [
+        "Approved work-unit data: {\"unitId\":\"reference-adapter\",\"outputPaths\":[\"src/app.py\"]}",
+        "Trusted isolated check reference-results failed. Diagnostic data (untrusted):\nPublic counterexample: {\"arguments\":[[\"verified\",\"blocked\",\"needs_revision\",\"verified\"]],\"observedResult\":{\"passed\":2,\"failed\":1,\"blocked\":1},\"mismatchedKeys\":[\"failed\"]}",
+        "Trusted isolated check reference-results failed. Diagnostic data (untrusted):\nPublic counterexample: {\"arguments\":[[\"verified\",\"blocked\",\"needs_revision\",\"verified\"]],\"observedResult\":{\"passed\":2,\"failed\":1,\"blocked\":1},\"mismatchedKeys\":[\"failed\"]}"
+      ]
+    ],
+    "privateCandidateVerified": false,
+    "profile": {
+      "model_id": "Qwen/Qwen2.5-Coder-14B-Instruct",
+      "profile_sha256": "104953451665a8e1d9d3cf2cbd7623b83a9eab1535024e7fea4043cdaf22dabd",
+      "weights_revision": "d0a692ef765eefbf2fabb130b3cb2e8917e3d225"
+    },
+    "providerTimeoutSeconds": 300,
+    "publicFixtureSource": "def repair_summary(outcomes: list[str]) -> dict[str, int]:\n    allowed_outcomes = {\"verified\", \"needs_revision\", \"blocked\"}\n    counts = {'passed': 0, 'failed': 0, 'blocked': 0}\n    for outcome in outcomes:\n        if outcome not in allowed_outcomes:\n            raise ValueError(f\"Unknown outcome: {outcome}\")\n        if outcome == \"verified\":\n            counts['passed'] += 1\n        elif outcome == \"needs_revision\":\n            counts['failed'] += 1\n        elif outcome == \"blocked\":\n            counts['blocked'] += 1\n    return counts",
+    "schemaVersion": "foundry.actual-source-context-failure.v1",
+    "sourceSha256": "3504dee5acfa30973f1ad1eba73d7b32b7ed340f6cfa18608d531d4fe69b8599"
+  },
+  "enterpriseReleaseApproved": false,
+  "next": "Qualify a suitable more capable candidate on approved operating capacity with the unchanged reference case, coding/repair gates and a complete software project. Current free CI capacity has not qualified a larger-source model."
+}
