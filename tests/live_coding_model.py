@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import os
 from dataclasses import replace
 import secrets
 import socket
@@ -64,6 +65,9 @@ def live_model(directory: Path, assets: Path, *, max_output_tokens: int = 192,
     profile_path = directory / "approved-model.json"
     profile_path.touch(mode=0o600, exist_ok=False)
     profile_path.write_text(json.dumps(profile.as_payload()), encoding="utf-8")
+    inference_timeout = int(os.environ.get("FOUNDRY_MODEL_INFERENCE_TIMEOUT_SECONDS", "110"))
+    if not 5 <= inference_timeout <= 590:
+        raise ValueError("bounded local inference timeout required")
     port, engine_port = _port(), _port()
     while engine_port == port:
         engine_port = _port()
@@ -73,6 +77,7 @@ def live_model(directory: Path, assets: Path, *, max_output_tokens: int = 192,
         "--runner-token-file", str(secret), "--policy-sha256", "a" * 64,
         "--input-tariff", "100000", "--output-tariff", "100000",
         "--port", str(port), "--engine-port", str(engine_port), "--profile", str(profile_path),
+        "--inference-timeout-seconds", str(inference_timeout),
     ]
     try:
         with subprocess.Popen(argv, stdin=subprocess.DEVNULL) as server:
@@ -83,7 +88,7 @@ def live_model(directory: Path, assets: Path, *, max_output_tokens: int = 192,
                 if server.poll() is None:
                     server.terminate()
                 try:
-                    status = server.wait(timeout=135)
+                    status = server.wait(timeout=inference_timeout + 25)
                 except subprocess.TimeoutExpired:
                     server.kill()
                     server.wait(timeout=5)

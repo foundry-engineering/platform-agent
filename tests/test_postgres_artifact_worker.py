@@ -449,7 +449,7 @@ def test_core_builder_runs_metered_model_and_final_scanned_zip(database, tmp_pat
         from agent_protocol.schema import canonical_sha256
         invocation = 'inv_' + canonical_sha256([envelope['run_id'], tag])[:32]
         provider = LocalExecutionProvider(endpoint=provider_origin, token_supplier=lambda: secret,
-            timeout_seconds=120, model_context=context or None, model_invocation_id=invocation if tag != 'delivery' else None,
+            timeout_seconds=300 if larger_context or evaluating else 120, model_context=context or None, model_invocation_id=invocation if tag != 'delivery' else None,
             provider_budget_ceiling_microusd=ceiling)
         return build_core_artifact_worker(binding=h.config, core_origin='https://core.example.test',
             core_token_supplier=lambda: 'service-fixture-secret', admissions=h.admissions, package=h.package,
@@ -587,6 +587,7 @@ class OrderTotals(unittest.TestCase):
         worker = CoreBuilderWorker(control=control,
             configuration=CoreBuilderConfiguration(code.task, h.config, h.job.work_node_id,
                 PATHS if project else live_paths if live_units or polyglot or evaluating or larger_context else ('src/app.py',), code.workspace, code.state,
+                maximum_seconds=1200 if larger_context else 600,
                 work_units=UNITS if project else live_work_units, automatic_plan=automatic_plan, diagnose_first=polyglot or repair),
             authority_factory=lambda check: code.authority(execution_checkpoint=check), worker_factory=factory,
             verifier=verifier, artifacts=code.artifacts,
@@ -607,14 +608,27 @@ class OrderTotals(unittest.TestCase):
             quality_receipts.append(receipt)
             print("PUBLIC_QUALITY_CASE=" + json.dumps(receipt.case_id) + ":" + receipt.outcome)
             return
+        from time import monotonic
+        model_work_started = monotonic()
         try:
             assert worker.run_once()
-        except Exception:
+        except Exception as error:
             if larger_context:
                 from source_context_acceptance import failure_diagnostics
                 diagnostics = failure_diagnostics(code.workspace, evidence)
                 diagnostics["modelFeedback"] = [context["verificationFeedback"] for context in model_contexts]
+                diagnostics.update(schemaVersion="foundry.actual-source-context-failure.v1",
+                    errorType=type(error).__name__, elapsedSeconds=round(monotonic() - model_work_started, 3),
+                    inferenceTimeoutSeconds=int(os.environ.get("FOUNDRY_MODEL_INFERENCE_TIMEOUT_SECONDS", "110")),
+                    providerTimeoutSeconds=300, maximumJobSeconds=1200,
+                    profile=replace(context_profile, max_output_tokens=192).identity(),
+                    privateCandidateVerified=False, enterpriseReleaseApproved=False)
                 print("SOURCE_CONTEXT_FAILURE=" + json.dumps(diagnostics, sort_keys=True))
+                if os.environ.get("FOUNDRY_CONTEXT_REPORT"):
+                    target = Path(os.environ["FOUNDRY_CONTEXT_REPORT"])
+                    with target.open("x", encoding="utf-8") as report_file:
+                        target.chmod(0o600)
+                        json.dump(diagnostics, report_file, sort_keys=True, indent=2)
             raise
         assert len([x for x in peers.events if x.get('type') == 'artifact']) == 1
         assert peers.events[-1]['outcome'] == 'completed'
@@ -705,6 +719,9 @@ class OrderTotals(unittest.TestCase):
                     observed.update(schemaVersion="foundry.actual-source-context.v1",
                         profile=replace(context_profile, max_output_tokens=192).identity(),
                         runtimeSha256=RUNTIME.sha256, excessTokensRejectedBeforeClaim=True,
+                        inferenceTimeoutSeconds=int(os.environ.get("FOUNDRY_MODEL_INFERENCE_TIMEOUT_SECONDS", "110")),
+                        providerTimeoutSeconds=300, maximumJobSeconds=1200,
+                        elapsedSeconds=round(monotonic() - model_work_started, 3),
                         referenceUnchanged=True, privateCandidateVerified=True,
                         enterpriseReleaseApproved=False, marketRankClaim=False)
                     print("SOURCE_CONTEXT_REPORT=" + json.dumps(observed, sort_keys=True))

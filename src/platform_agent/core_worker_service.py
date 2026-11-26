@@ -96,8 +96,17 @@ def load_worker(
         "providerMode", "coreTokenFile", "providerTokenFile", "postgresDsnFile", "tenantStoreFile",
         "admissionStoreFile", "executionStateFile", "packageFile", "artifactFile", "signers", "uploadHosts",
     }
-    if not isinstance(data, dict) or set(data) != keys or data["schemaVersion"] != "foundry.artifact-worker-profile.v1":
+    if not isinstance(data, dict):
         raise WorkerConfigurationError("exact artifact worker profile required")
+    version = data.get("schemaVersion")
+    expected = keys | {"providerTimeoutSeconds"} if version == "foundry.artifact-worker-profile.v2" else keys
+    if (version not in {"foundry.artifact-worker-profile.v1", "foundry.artifact-worker-profile.v2"}
+            or set(data) != expected):
+        raise WorkerConfigurationError("exact artifact worker profile required")
+    timeout = data["providerTimeoutSeconds"] if version == "foundry.artifact-worker-profile.v2" else 120
+    maximum = 600 if data["providerMode"] == "loopback" else 120
+    if type(timeout) is not int or not 1 <= timeout <= maximum:
+        raise WorkerConfigurationError("provider timeout exceeds the explicit transport policy")
     for key in keys - {"maxInputTokens", "maxOutputTokens", "signers", "uploadHosts"}:
         if not isinstance(data[key], str) or not data[key] or data[key].strip() != data[key]:
             raise WorkerConfigurationError("invalid artifact worker profile field")
@@ -123,14 +132,14 @@ def load_worker(
             raise WorkerConfigurationError("provider origin has no host")
         provider: HttpExecutionProvider = HttpExecutionProvider(
             endpoint=data["providerOrigin"], token_supplier=provider_token,
-            egress_policy=EgressPolicy(frozenset({host})), timeout_seconds=120,
+            egress_policy=EgressPolicy(frozenset({host})), timeout_seconds=timeout,
             model_context=model_context,
             model_invocation_id=invocation,
             provider_budget_ceiling_microusd=reservation_ceiling_microusd,
         )
     elif data["providerMode"] == "loopback":
         provider = LocalExecutionProvider(endpoint=data["providerOrigin"], token_supplier=provider_token,
-            timeout_seconds=120, model_context=model_context, model_invocation_id=invocation,
+            timeout_seconds=timeout, model_context=model_context, model_invocation_id=invocation,
             provider_budget_ceiling_microusd=reservation_ceiling_microusd)
     else:
         raise WorkerConfigurationError("provider mode must be explicitly https or loopback")

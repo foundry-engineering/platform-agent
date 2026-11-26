@@ -88,3 +88,27 @@ context limits, 512-token public evaluation ceiling, three-call context/repair
 limits, authority, expected answers and checks are unchanged. No paid service
 is provisioned; preflight must fit existing CI capacity before asset download.
 The prior frozen 30B profile and failure evidence remain available.
+
+## CPU execution deadline — 26 November 2026
+
+The first 14B candidate run (44690935852) returned no proposal: its inner HTTP
+inference reached the fixed 110-second timeout, and the local Runner also capped
+all calls at 120 seconds. That run cannot establish model correctness or an
+incorrect generated algorithm.
+
+The coordinated local CPU path now explicitly allows 290 seconds for generation
+and 300 seconds for the Runner response. The enclosing larger-context session
+allows 1,200 seconds across the original three attempts. Ordinary operational
+profiles retain their previous defaults; longer waits require explicit local
+configuration. HTTPS and tokenization deadlines remain unchanged. A live-authority
+observer interrupts extended local requests when the existing paid gate loses
+permission. All original token, cost, write, oracle and delivery checks remain.
+
+The exact same larger-source case must pass before the remaining actual model
+checks run. Both success and failure now preserve a public-fixture receipt with
+elapsed time and selected time limits. A failure receipt explicitly denies
+verified delivery and release approval. The CI job has a finite 60-minute outer
+limit for the complete sequential candidate qualification; no paid machine is
+provisioned by this change.
+
+The coordinated protected Engineering commit is 42ac12c19e831ee33d5ae34cc669ab03d9e6df41 (PR 42); Runner is b7b69b55c68408019ff1bb8192e3eed037d6e93a (PR 55). Their ordinary CI and required native gates passed before merge.
