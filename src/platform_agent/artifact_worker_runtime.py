@@ -11,7 +11,7 @@ from psycopg import Connection
 
 from foundry_runner.control_plane_http import ControlPlaneHttpClient
 from foundry_runner.economic_gate import EconomicGate
-from foundry_runner.execution_provider import ExecutionWorker, HttpExecutionProvider
+from foundry_runner.execution_provider import ExecutionWorker, HttpExecutionProvider, LocalExecutionProvider
 from foundry_runner.http_transport import HttpTransport
 from foundry_runner.network_egress import EgressPolicy
 from foundry_runner.paid_dispatch import HeartbeatPaidDispatcher, PaidDispatchPolicy
@@ -51,6 +51,10 @@ def build_core_artifact_worker(
     caller runs run_once under its process supervisor and owns service-token
     renewal, external signer provisioning and package deployment.
     """
+    if policy.local_cpu_execution and not isinstance(provider, LocalExecutionProvider):
+        raise ValueError("extended CPU Work Authority requires the explicit local provider")
+    if policy.local_cpu_execution and session_envelope is None:
+        raise ValueError("extended CPU execution requires an approved Builder budget session")
     now = clock or (lambda: datetime.now(UTC))
     if control is not None and (control.tenant_id != binding.tenant_id or control.workspace_id != binding.workspace_id):
         raise ValueError("shared Core claim client differs from configured worker scope")

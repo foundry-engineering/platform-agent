@@ -1,0 +1,45 @@
+{
+  "schemaVersion": "foundry.failed-source-context-checkpoint.v1",
+  "date": "2026-11-26",
+  "platformCommit": "e999f7ef8283eea59e8a3d797e02a399a5e84111",
+  "sourceContextRun": "https://github.com/foundry-engineering/platform-agent/actions/runs/45865766559",
+  "browserRun": "https://github.com/foundry-engineering/platform-agent/actions/runs/45865766491",
+  "sourceContextPassed": false,
+  "browserDeliveryRecoveryPassed": true,
+  "modelGenerationReturned": false,
+  "inferenceOutcome": "uncertain",
+  "reason": "No model proposal returned before the explicitly configured 290-second loopback inference deadline. No generated-code correctness outcome can be inferred.",
+  "observed": {
+    "checks": [
+      {
+        "check_id": "reference-results",
+        "diagnostic_tail": "Public counterexample: {\"arguments\":[[\"verified\",\"blocked\",\"needs_revision\",\"verified\"]],\"observedResult\":{\"passed\":0,\"failed\":0,\"blocked\":0},\"mismatchedKeys\":[\"passed\",\"failed\",\"blocked\"]}",
+        "exit_code": 1,
+        "passed": false,
+        "round": 1
+      }
+    ],
+    "elapsedSeconds": 291.089,
+    "enterpriseReleaseApproved": false,
+    "errorType": "AssertionError",
+    "inferenceTimeoutSeconds": 290,
+    "maximumJobSeconds": 1200,
+    "modelFeedback": [
+      [
+        "Approved work-unit data: {\"unitId\":\"reference-adapter\",\"outputPaths\":[\"src/app.py\"]}"
+      ]
+    ],
+    "privateCandidateVerified": false,
+    "profile": {
+      "model_id": "Qwen/Qwen2.5-Coder-14B-Instruct",
+      "profile_sha256": "104953451665a8e1d9d3cf2cbd7623b83a9eab1535024e7fea4043cdaf22dabd",
+      "weights_revision": "d0a692ef765eefbf2fabb130b3cb2e8917e3d225"
+    },
+    "providerTimeoutSeconds": 300,
+    "publicFixtureSource": "def repair_summary(outcomes: list[str]) -> dict[str, int]:\n    return {'passed': 0, 'failed': 0, 'blocked': 0}\n",
+    "schemaVersion": "foundry.actual-source-context-failure.v1",
+    "sourceSha256": "fc95e3a5bfb15606d6b1edac6701749be84fee9fc8d78ca2f2b601382f545ed1"
+  },
+  "enterpriseReleaseApproved": false,
+  "next": "Qualify inference latency and the unchanged source case on an authorized suitable inference host; keep the failed candidate unpromoted."
+}

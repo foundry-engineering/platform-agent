@@ -37,7 +37,21 @@ def test_operational_files_must_be_private_regular_bounded_files(tmp_path, kind)
         private_file(str(path), maximum=maximum)
 
 
-def test_exact_private_profile_loads_existing_operational_state_without_creating_authority(tmp_path, monkeypatch):
+@pytest.mark.parametrize('version,mode,timeout,valid', [
+    ('v1', 'loopback', None, True),
+    ('v2', 'loopback', 300, True),
+    ('v2', 'loopback', 600, True),
+    ('v2', 'https', 120, True),
+    ('v2', 'https', 121, False),
+    ('v2', 'loopback', 601, False),
+    ('v2', 'loopback', True, False),
+    ('v2', 'loopback', '300', False),
+    ('v2', 'loopback', 0, False),
+    ('v1', 'loopback', 300, False),
+])
+def test_exact_private_profile_loads_existing_operational_state_without_creating_authority(
+    tmp_path, monkeypatch, version, mode, timeout, valid,
+):
     h = Harness(tmp_path, monkeypatch)
     for file in (tmp_path / "tenants.db", tmp_path / "admissions.db"):
         file.chmod(0o600)
@@ -60,11 +74,26 @@ def test_exact_private_profile_loads_existing_operational_state_without_creating
         "signers": [{"kid": h.kid, "privateKeyFile": write(tmp_path / "signer", base64.b64encode(h.key.private_bytes_raw()))}],
         "uploadHosts": ["storage.example.test"],
     }
+    profile['schemaVersion'] = 'foundry.artifact-worker-profile.' + version
+    profile['providerMode'] = mode
+    if mode == 'https':
+        profile['providerOrigin'] = 'https://provider.example.test'
+    if timeout is not None:
+        profile['providerTimeoutSeconds'] = timeout
     path = tmp_path / "profile.json"
     write(path, json.dumps(profile).encode())
     received = []
     monkeypatch.setattr("platform_agent.core_worker_service.build_core_artifact_worker", lambda **args: received.append(args) or "configured")
+    if not valid:
+        with pytest.raises(WorkerConfigurationError):
+            load_worker(path)
+        assert not received
+        return
     assert load_worker(path) == "configured"
+    effective_timeout = 120 if timeout is None else timeout
+    assert received[0]['provider']._timeout == effective_timeout
+    assert received[0]['policy'].lifetime_seconds == (min(600, effective_timeout + 30) if effective_timeout > 120 else 120)
+    assert received[0]['policy'].local_cpu_execution is (effective_timeout > 120)
     assert received[0]["binding"] == h.config
     assert received[0]["signers"][0].public_key == h.public
     assert received[0]["package"] == h.package and received[0]["artifact_bytes"] == h.bytes

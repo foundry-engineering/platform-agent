@@ -36,6 +36,7 @@ class ArtifactWorkPolicy:
     jurisdiction: str
     lifetime_seconds: int = 120
     max_model_calls: int = 1
+    local_cpu_execution: bool = False
 
     def __post_init__(self) -> None:
         for name, low, high in (("policy_id", 3, 128), ("jurisdiction", 2, 64)):
@@ -45,8 +46,11 @@ class ArtifactWorkPolicy:
                 raise ValueError("trusted artifact policy requires bounded canonical text")
         if not isinstance(self.policy_sha256, str) or re.fullmatch(r"[a-f0-9]{64}", self.policy_sha256) is None:
             raise ValueError("trusted artifact policy requires its exact SHA-256")
-        if type(self.lifetime_seconds) is not int or not 1 <= self.lifetime_seconds <= 120:
-            raise ValueError("artifact authority lifetime must be within 120 seconds")
+        if type(self.local_cpu_execution) is not bool:
+            raise ValueError("local CPU authority requires an explicit trusted boolean")
+        maximum = 600 if self.local_cpu_execution else 120
+        if type(self.lifetime_seconds) is not int or not 1 <= self.lifetime_seconds <= maximum:
+            raise ValueError("artifact authority lifetime exceeds the configured execution policy")
         if type(self.max_model_calls) is not int or not 1 <= self.max_model_calls <= 6:
             raise ValueError("artifact model calls must be within 1..6")
 

@@ -16,10 +16,10 @@ dependencies = [
 
 [project.optional-dependencies]
 integration = [
-  "engineering-agent @ git+https://github.com/foundry-engineering/engineering-agent.git@7f81fe677ba3ef81192f008aa599b9681500348d",
+  "engineering-agent @ git+https://github.com/foundry-engineering/engineering-agent.git@42ac12c19e831ee33d5ae34cc669ab03d9e6df41",
 ]
 worker = [
-  "foundry-runners @ git+https://github.com/foundry-engineering/foundry-runners.git@66f3bad6600b91d3e72653069b77d0ae79e67119",
+  "foundry-runners @ git+https://github.com/foundry-engineering/foundry-runners.git@b7b69b55c68408019ff1bb8192e3eed037d6e93a",
 ]
 dev = [
   "pytest>=9",
