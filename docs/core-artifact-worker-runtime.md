@@ -69,3 +69,24 @@ backend supports the explicitly configured trusted host; the factory can instead
 receive external signing callbacks. The deployment's key protection and signer
 approval remain the operator's responsibility. Errors expose no credentials,
 DSNs, signing material, provider body or traceback.
+
+## Explicit local CPU deadline
+
+Existing `foundry.artifact-worker-profile.v1` files retain their exact fields and
+120-second provider deadline. To configure a different deadline, use
+`foundry.artifact-worker-profile.v2` with the same fields plus the required integer
+`providerTimeoutSeconds`. Loopback mode accepts 1–600 seconds; HTTPS mode remains
+limited to 1–120 seconds. An example coordinated CPU setting is 290 seconds in
+the managed model host and 300 seconds in the local worker. The signed enclosing
+Builder session must cover all permitted rounds; this does not increase its
+monetary budget, token counts, allowed calls or write scope.
+
+Extended CPU execution additionally requires an already approved Builder budget
+session. Use the v2 worker profile through `foundry-engineering-agent`; an ordinary
+standalone artifact worker cannot use that field to mint a longer budget. For a
+300-second local provider, the issuer signs a 330-second Work Authority, preserving
+all original resource, call and cost restrictions. Only the explicit local
+provider may compose this trusted CPU policy; default and HTTPS authorities stay
+limited to 120 seconds. Skill Activation and invocation-witness admission windows
+are unchanged. The session and continuously checked signed Work Authority bound
+ongoing execution.
