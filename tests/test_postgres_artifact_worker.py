@@ -367,6 +367,8 @@ def test_core_builder_runs_metered_model_and_final_scanned_zip(database, tmp_pat
             super().__init__(h)
             self.objects = {}
         def core(self, request, *, timeout):
+            if (larger_context or evaluating) and request.full_url.endswith('/heartbeat'):
+                self.h.now = datetime.now(UTC).replace(microsecond=0)
             if request.full_url.endswith('/outputs'):
                 from worker_counterparties import Response
                 body = json.loads(request.data)
@@ -453,10 +455,12 @@ def test_core_builder_runs_metered_model_and_final_scanned_zip(database, tmp_pat
             provider_budget_ceiling_microusd=ceiling)
         return build_core_artifact_worker(binding=h.config, core_origin='https://core.example.test',
             core_token_supplier=lambda: 'service-fixture-secret', admissions=h.admissions, package=h.package,
-            artifact_bytes=h.bytes, policy=ArtifactWorkPolicy('pol_worker-acceptance.v1', 'a' * 64, 'AT', max_model_calls=code.task.max_rounds),
+            artifact_bytes=h.bytes, policy=ArtifactWorkPolicy('pol_worker-acceptance.v1', 'a' * 64, 'AT',
+                max_model_calls=code.task.max_rounds, lifetime_seconds=330 if larger_context or evaluating else 120,
+                local_cpu_execution=larger_context or evaluating),
             signers=[h.signer], state_path=tmp_path / 'core-builder-state.db', connection_factory=database,
             license_id='license_worker-acceptance', provider=provider, upload_egress_policy=EgressPolicy(frozenset({'storage.example.test'})),
-            upload_transport=peers, clock=lambda: h.now, control=control, session_envelope=envelope,
+            upload_transport=peers, clock=lambda: datetime.now(UTC) if larger_context or evaluating else h.now, control=control, session_envelope=envelope,
             task_id=code.task.task_id, invocation_tag=tag, reservation_ceiling_microusd=ceiling)
     tests = code.workspace / 'tests'
     tests.mkdir(mode=0o755)

@@ -112,3 +112,10 @@ limit for the complete sequential candidate qualification; no paid machine is
 provisioned by this change.
 
 The coordinated protected Engineering commit is 42ac12c19e831ee33d5ae34cc669ab03d9e6df41 (PR 42); Runner is b7b69b55c68408019ff1bb8192e3eed037d6e93a (PR 55). Their ordinary CI and required native gates passed before merge.
+
+The coordinated source also aligns signed Work Authority with the longer local
+CPU wait: 330 seconds for the 300-second provider, only under an existing Builder
+budget session. Activation and dispatch-witness admission windows remain short;
+no broader cost/call/scope authority is created. The actual larger-context and
+coding/repair workers use a real advancing UTC clock and renewing Core heartbeat
+responses, so frozen test time cannot conceal authority expiry during inference.

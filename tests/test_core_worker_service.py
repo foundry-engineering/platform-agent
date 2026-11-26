@@ -90,7 +90,10 @@ def test_exact_private_profile_loads_existing_operational_state_without_creating
         assert not received
         return
     assert load_worker(path) == "configured"
-    assert received[0]['provider']._timeout == (120 if timeout is None else timeout)
+    effective_timeout = 120 if timeout is None else timeout
+    assert received[0]['provider']._timeout == effective_timeout
+    assert received[0]['policy'].lifetime_seconds == (min(600, effective_timeout + 30) if effective_timeout > 120 else 120)
+    assert received[0]['policy'].local_cpu_execution is (effective_timeout > 120)
     assert received[0]["binding"] == h.config
     assert received[0]["signers"][0].public_key == h.public
     assert received[0]["package"] == h.package and received[0]["artifact_bytes"] == h.bytes
