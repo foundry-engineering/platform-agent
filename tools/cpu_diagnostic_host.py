@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+from subprocess import Popen as EngineProcess
 from typing import Any, cast
 from unittest.mock import patch
 
@@ -14,11 +15,11 @@ def main() -> int:
         os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     original = subprocess.Popen
     with os.fdopen(descriptor, 'wb') as log:
-        def traced(arguments: Any, *args: Any, **kwargs: Any) -> subprocess.Popen[bytes]:
+        def traced(arguments: Any, *args: Any, **kwargs: Any) -> EngineProcess[bytes]:
             if (isinstance(arguments, list) and arguments
                     and str(arguments[0]).endswith('/llama-server')):
                 kwargs['stderr'] = log
-            return cast(subprocess.Popen[bytes], original(arguments, *args, **kwargs))
+            return cast(EngineProcess[bytes], original(arguments, *args, **kwargs))
 
         with patch.object(subprocess, 'Popen', traced):
             return model_host.main()
