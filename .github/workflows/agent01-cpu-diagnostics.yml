@@ -1,0 +1,96 @@
+name: agent01-cpu-diagnostics
+'on':
+  push:
+    branches: [work/agent01-cpu-diagnostics-20261126]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: agent01-cpu-diagnostics-${{ github.ref_name }}
+  cancel-in-progress: true
+jobs:
+  public-source-latency:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: platform_ci
+          POSTGRES_PASSWORD: platform_ci_test_only
+          POSTGRES_DB: platform_diagnostic_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U platform_ci -d platform_diagnostic_test"
+          --health-interval 5s --health-timeout 3s --health-retries 15
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/checkout@v4
+        with:
+          repository: foundry-engineering/platform-agent
+          ref: e999f7ef8283eea59e8a3d797e02a399a5e84111
+          path: .candidate
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: foundry-engineering/foundry-runners
+          ref: b7b69b55c68408019ff1bb8192e3eed037d6e93a
+          path: .candidate/.integration/runner
+          token: ${{ secrets.FOUNDRY_CI_READ_TOKEN }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - uses: astral-sh/setup-uv@v7
+      - name: Install the unchanged frozen candidate and approved runtime
+        env:
+          GIT_TOKEN: ${{ secrets.FOUNDRY_CI_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$GIT_TOKEN"
+          echo "::add-mask::$GIT_TOKEN"
+          git config --global url."https://x-access-token:${GIT_TOKEN}@github.com/".insteadOf "https://github.com/"
+          trap 'git config --global --unset-all url."https://x-access-token:${GIT_TOKEN}@github.com/".insteadOf' EXIT
+          uv sync --project .candidate --locked --extra dev --extra integration --extra worker
+          docker pull docker.io/library/python@sha256:1b668429b3511ab407d8e00648891631b0b1a4d7e15e3ca70f38ab5b91ad4ab4
+          install -m 0600 .candidate/deploy/profiles/qwen25-coder-14b-q4-k-m.json "$RUNNER_TEMP/diagnostic-profile.json"
+          uv run --project .candidate --no-sync foundry-model-host fetch-assets "$RUNNER_TEMP/diagnostic-model" --profile "$RUNNER_TEMP/diagnostic-profile.json"
+      - name: Capture private engine stderr without changing model inputs or arguments
+        env:
+          FOUNDRY_MODEL_DIAGNOSTIC_BOOTSTRAP: ${{ github.workspace }}/tools/cpu_diagnostic_host.py
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          p = Path('.candidate/tests/live_coding_model.py')
+          source = p.read_text()
+          before = 'sys.executable, "-m", "engineering_agent.model_host", "serve",'
+          assert source.count(before) == 1
+          after = 'sys.executable, ' + repr(os.environ['FOUNDRY_MODEL_DIAGNOSTIC_BOOTSTRAP']) + ', "serve",'
+          p.write_text(source.replace(before, after))
+          PY
+      - name: Run the unchanged public source case at its recorded deadline
+        working-directory: .candidate
+        env:
+          FOUNDRY_PLATFORM_PG_TEST: '1'
+          FOUNDRY_BUILDER_REAL_DOCKER: '1'
+          FOUNDRY_PLATFORM_TEST_DATABASE_URL: postgres://platform_ci:platform_ci_test_only@127.0.0.1:5432/platform_diagnostic_test
+          FOUNDRY_RUNNER_SOURCE_ROOT: ${{ github.workspace }}/.candidate/.integration/runner
+          FOUNDRY_CONTEXT_MODEL_PROFILE: ${{ runner.temp }}/diagnostic-profile.json
+          FOUNDRY_CONTEXT_REPORT: ${{ runner.temp }}/diagnostic-context-result.json
+          FOUNDRY_BUILDER_MODEL_ASSETS: ${{ runner.temp }}/diagnostic-model
+          FOUNDRY_MODEL_INFERENCE_TIMEOUT_SECONDS: '290'
+          FOUNDRY_PRIVATE_ENGINE_LOG: ${{ runner.temp }}/private-engine.log
+        run: uv run --no-sync pytest -x -s -vv 'tests/test_postgres_artifact_worker.py::test_core_builder_runs_metered_model_and_final_scanned_zip[live_context]'
+      - name: Extract bounded numeric timings only
+        if: always()
+        run: python tools/summarize_cpu_diagnostic.py --log "$RUNNER_TEMP/private-engine.log" --output "$RUNNER_TEMP/cpu-diagnostics.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: agent01-public-cpu-diagnostics
+          path: |
+            ${{ runner.temp }}/cpu-diagnostics.json
+            ${{ runner.temp }}/diagnostic-context-result.json
+          if-no-files-found: error
+          retention-days: 14
